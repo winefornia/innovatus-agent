@@ -17,9 +17,9 @@ if str(ROOT) not in sys.path:
 os.environ.setdefault("TELEGRAM_APPROVAL_CHAT_ID", "")
 os.environ.setdefault("POSTGRES_CONNECTION_STRING", "")
 
-from agents.tastingroom_graph import tastingroom_graph
+from agents.case_desk_graph import case_desk_graph
 from services.gmail_service import read_email
-import services.tastingroom_service as tastingroom_service
+from services.case_judge import CaseJudgment
 
 
 MIRA_MESSAGE_IDS = [
@@ -53,9 +53,7 @@ Questions / Comments: N/A"""
 
 
 def main() -> None:
-    tastingroom_service.llm_extract_email = lambda *args, **kwargs: {}
-
-    for message_id in MIRA_MESSAGE_IDS:
+    for i, message_id in enumerate(MIRA_MESSAGE_IDS):
         msg = read_email(message_id)
         body = msg["body"] or (MIRA_FORM_BODY if message_id == "19df0672d1adc9e9" else "")
         raw_email = (
@@ -64,7 +62,7 @@ def main() -> None:
             f"To: {msg['to']}\n\n"
             f"{body}"
         )
-        out = tastingroom_graph.invoke(
+        out = case_desk_graph.invoke(
             {
                 "raw_email": raw_email,
                 "sender_id": msg["from"],
@@ -74,17 +72,35 @@ def main() -> None:
                 "body": body,
                 "gmail_message_id": message_id,
                 "gmail_thread_id": msg["thread_id"],
+                "disable_actions": True,
             },
-            config={"configurable": {"thread_id": f"mira-replay-{message_id}"}},
+            config={"configurable": {"thread_id": f"mira-replay-v2-{message_id}"}},
         )
-        print(
-            message_id,
-            out.get("message_type"),
-            out.get("reservation_id"),
-            out.get("current_state"),
-            out.get("recommended_action"),
-            out.get("claims_count"),
-        )
+
+        judgment_data = out.get("_judgment", {})
+        try:
+            j = CaseJudgment.model_validate(judgment_data)
+            action = j.next_best_action.tool_name
+            confidence = j.confidence
+            interrupt_level = j.interrupt_level
+            summary = j.case_summary[:80]
+            truth = j.current_truth
+            evidence_count = len(j.evidence)
+            uncertainty_count = len(j.uncertainties)
+        except Exception:
+            action = "?"
+            confidence = 0.0
+            interrupt_level = "?"
+            summary = "(judgment parse failed)"
+            truth = None
+            evidence_count = 0
+            uncertainty_count = 0
+
+        print(f"\n[{i+1:02d}] {message_id}")
+        print(f"     type={out.get('message_type')}  rid={out.get('reservation_id')}")
+        print(f"     state={out.get('_reservation', {}).get('current_state', '?')}  action={action}")
+        print(f"     confidence={confidence:.0%}  interrupt={interrupt_level}  evidence={evidence_count}  uncertainties={uncertainty_count}")
+        print(f"     summary: {summary}")
 
 
 if __name__ == "__main__":

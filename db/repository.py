@@ -7,12 +7,14 @@ from app.config import SUPABASE_URL, SUPABASE_SERVICE_KEY
 from db.models import (
     AvailabilityClaim,
     Case,
+    CaseJudgmentRecord,
     FailureLabel,
     InvoiceLog,
     Reservation,
     ReservationActionRequest,
     ReservationEvent,
     TraceEvent,
+    UnresolvedEvent,
 )
 
 _client: Optional[Client] = None
@@ -355,6 +357,55 @@ def get_reservation_action(action_id: str) -> Optional[dict]:
 def update_reservation_action(action_id: str, **fields) -> None:
     client = _get_client()
     client.table("reservation_action_requests").update(fields).eq("action_id", action_id).execute()
+
+
+# ---------------------------------------------------------------------------
+# Case judgments
+# ---------------------------------------------------------------------------
+
+def insert_case_judgment(record: CaseJudgmentRecord) -> None:
+    client = _get_client()
+    client.table("case_judgments").insert({
+        "record_id": record.record_id,
+        "case_id": record.case_id,
+        "source_message_id": record.source_message_id or None,
+        "judgment_json": record.judgment_json or {},
+        "confidence": record.confidence,
+        "next_best_action": record.next_best_action or None,
+        "interrupt_level": record.interrupt_level,
+    }).execute()
+
+
+def get_latest_case_judgment(case_id: str) -> Optional[dict]:
+    client = _get_client()
+    result = (
+        client.table("case_judgments")
+        .select("*")
+        .eq("case_id", case_id)
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    rows = result.data or []
+    return rows[0] if rows else None
+
+
+# ---------------------------------------------------------------------------
+# Unresolved events
+# ---------------------------------------------------------------------------
+
+def insert_unresolved_event(event: UnresolvedEvent) -> None:
+    client = _get_client()
+    client.table("unresolved_reservation_events").insert({
+        "event_id": event.event_id,
+        "source_message_id": event.source_message_id or None,
+        "gmail_thread_id": event.gmail_thread_id or None,
+        "subject": event.subject or None,
+        "from_email": event.from_email or None,
+        "message_type": event.message_type,
+        "reason": event.reason or None,
+        "raw_payload": event.raw_payload or {},
+    }).execute()
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,6 @@
 """Database models for invoice logging, reservations, and the control layer."""
 
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal, Optional
@@ -175,6 +176,33 @@ class FailureLabel:
     suggested_patch: str             # prompt | tool | guardrail | schema | routing | workflow
     confidence: float = 1.0
     eval_case_id: Optional[str] = None
+
+
+@dataclass
+class CaseJudgmentRecord:
+    """Persisted snapshot of a CaseJudgment — one row per email processed."""
+
+    case_id: str
+    source_message_id: str = ""
+    judgment_json: dict = field(default_factory=dict)
+    confidence: float = 0.0
+    next_best_action: str = ""
+    interrupt_level: str = "none"
+    record_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+
+@dataclass
+class UnresolvedEvent:
+    """An inbound email that could not be confidently matched to a reservation."""
+
+    source_message_id: str
+    gmail_thread_id: str = ""
+    subject: str = ""
+    from_email: str = ""
+    message_type: str = "unclassified"
+    reason: str = ""
+    raw_payload: dict = field(default_factory=dict)
+    event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
 @dataclass

@@ -156,10 +156,10 @@ def process_gmail_message(message_id: str, *, labels: list[str] | None = None) -
     if not full_text:
         return {"message_id": message_id, "status": "skipped", "reason": "empty_message"}
 
-    from agents.tastingroom_graph import tastingroom_graph
+    from agents.case_desk_graph import case_desk_graph
 
     thread_id = f"tasting_{thread or message_id[:12]}"
-    result = tastingroom_graph.invoke(
+    result = case_desk_graph.invoke(
         {
             "raw_email": full_text,
             "sender_id": sender,
