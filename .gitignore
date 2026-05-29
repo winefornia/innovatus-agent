@@ -1,0 +1,25 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.DS_Store
+*.egg-info/
+dist/
+build/
+.langgraph_cache/
+.mcp.json
+
+# Google OAuth token — deploy via: flyctl secrets set GMAIL_TOKEN_JSON_B64=$(base64 -i token.json)
+token.json
+token-*.json
+
+# Customer PII — loaded at runtime from Supabase; use app/data/*.example.json as templates
+app/data/customers.json
+app/data/approval_log.json
+
+logs/
+
+# gstack local data (security reports, learnings)
+.gstack/

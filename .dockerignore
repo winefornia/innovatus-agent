@@ -1,0 +1,10 @@
+.venv
+.env
+token.json
+token-*.json
+__pycache__
+*.pyc
+*.pyo
+.git
+logs/
+.mcp.json

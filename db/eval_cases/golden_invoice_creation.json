@@ -1,0 +1,16 @@
+{
+  "eval_id": "golden_invoice_creation_001",
+  "case_id": null,
+  "source": "golden",
+  "input": "Invoice Oak Barrel Restaurant, 2 cases Cabernet Sauvignon 2022, 1 case Pinot Noir 2021",
+  "expected_intent": "invoice_creation",
+  "expected_agent": "invoice_agent",
+  "should_reach_node": null,
+  "expected_output_contains": [],
+  "should_not_contain": ["error", "blocked"],
+  "risk_level": "medium",
+  "tags": ["golden", "invoice_creation"],
+  "failure_type": null,
+  "failure_description": null,
+  "suggested_patch": null
+}

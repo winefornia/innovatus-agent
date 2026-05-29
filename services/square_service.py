@@ -1,0 +1,247 @@
+"""Square API service layer (Square SDK v44+).
+
+All Square API calls go here. The agent graph calls these functions,
+never the Square SDK directly.
+"""
+import uuid
+from datetime import date, timedelta
+from typing import Optional
+
+from app.config import SQUARE_PROD_ACCESS_TOKEN, SQUARE_PROD_LOCATION_ID, SQUARE_LOCATION_ID
+
+_client = None
+
+
+def _get_client():
+    global _client
+    if _client:
+        return _client
+    token = SQUARE_PROD_ACCESS_TOKEN
+    if not token:
+        return None
+    try:
+        from square import Square
+        from square.environment import SquareEnvironment
+        _client = Square(token=token, environment=SquareEnvironment.PRODUCTION)
+        return _client
+    except Exception:
+        return None
+
+
+def get_or_create_square_customer(email: str, full_name: str) -> dict:
+    """Look up a customer in Square by email, or create them if not found.
+
+    Returns dict with customer_id and status ('found' or 'created'), or error key.
+    """
+    client = _get_client()
+    if not client:
+        return {"error": "Square not configured. Set SQUARE_PROD_ACCESS_TOKEN in .env"}
+    try:
+        response = client.customers.search(
+            query={
+                "filter": {
+                    "email_address": {
+                        "exact": email,
+                    }
+                }
+            }
+        )
+        customers = response.customers or []
+        if customers:
+            return {"status": "found", "customer_id": customers[0].id, "email": email}
+
+        parts = full_name.strip().split(" ", 1)
+        given = parts[0]
+        family = parts[1] if len(parts) > 1 else ""
+        create_resp = client.customers.create(
+            idempotency_key=str(uuid.uuid4()),
+            given_name=given,
+            family_name=family,
+            email_address=email,
+        )
+        return {"status": "created", "customer_id": create_resp.customer.id, "email": email}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+SCHEDULE_TO_DAYS = {
+    "UPON_RECEIPT": 0,
+    "NET_7": 7,
+    "NET_14": 14,
+    "NET_30": 30,
+}
+
+
+def create_order(customer_name: str, line_items: list[dict], location_id: Optional[str] = None) -> dict:
+    """Create a Square order (OPEN state) from priced line items.
+
+    line_items: list of dicts with product_name, quantity, unit_type,
+                final_unit_price_cents, bottles_per_case
+    """
+    client = _get_client()
+    if not client:
+        return {"error": "Square not configured. Set SQUARE_PROD_ACCESS_TOKEN in .env"}
+    loc = location_id or SQUARE_PROD_LOCATION_ID or SQUARE_LOCATION_ID
+    if not loc:
+        return {"error": "SQUARE_LOCATION_ID not set. Add it to .env"}
+
+    sq_line_items = []
+    for item in line_items:
+        qty = item["quantity"]
+        unit_type = item.get("unit_type", "bottle")
+        bottles_per_case = item.get("bottles_per_case", 12)
+
+        if unit_type == "case":
+            total_bottles = int(qty * bottles_per_case)
+            display_name = f"{item['product_name']} ({int(qty)} case{'s' if qty > 1 else ''} / {total_bottles} bottles)"
+        else:
+            total_bottles = int(qty)
+            display_name = f"{item['product_name']} ({int(qty)} bottle{'s' if qty > 1 else ''})"
+
+        sq_line_items.append({
+            "name": display_name,
+            "quantity": str(total_bottles),
+            "base_price_money": {
+                "amount": item["final_unit_price_cents"],
+                "currency": "USD",
+            },
+        })
+
+    try:
+        response = client.orders.create(
+            order={
+                "location_id": loc,
+                "reference_id": f"winefornia-{uuid.uuid4().hex[:8]}",
+                "line_items": sq_line_items,
+            },
+            idempotency_key=str(uuid.uuid4()),
+        )
+        order = response.order
+        return {
+            "status": "created",
+            "order_id": order.id,
+            "total_money": {
+                "amount": order.total_money.amount,
+                "currency": order.total_money.currency,
+            } if order.total_money else None,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def create_invoice_draft(
+    order_id: str,
+    customer_id: str,
+    title: str = "INNOVATUS Wine Purchase",
+    message: str = "",
+    payment_schedule: str = "NET_30",
+    accepted_payment_methods: Optional[list[str]] = None,
+    location_id: Optional[str] = None,
+) -> dict:
+    """Create a Square invoice draft linked to an order. Saved only, NOT sent.
+
+    delivery_method is SHARE_MANUALLY — never emailed automatically.
+    """
+    client = _get_client()
+    if not client:
+        return {"error": "Square not configured. Set SQUARE_PROD_ACCESS_TOKEN in .env"}
+    loc = location_id or SQUARE_PROD_LOCATION_ID or SQUARE_LOCATION_ID
+
+    days = SCHEDULE_TO_DAYS.get(payment_schedule, 30)
+    due_date = (date.today() + timedelta(days=days)).isoformat()
+
+    if accepted_payment_methods is None:
+        accepted_payment_methods = ["CARD", "BANK_ACCOUNT"]
+
+    methods = {
+        "card": "CARD" in accepted_payment_methods,
+        "bank_account": "BANK_ACCOUNT" in accepted_payment_methods,
+        "square_gift_card": False,
+        "cash_app_pay": False,
+    }
+
+    try:
+        response = client.invoices.create(
+            invoice={
+                "order_id": order_id,
+                "location_id": loc,
+                "title": title,
+                **({"description": message} if message else {}),
+                "primary_recipient": {
+                    "customer_id": customer_id,
+                },
+                "payment_requests": [
+                    {
+                        "request_type": "BALANCE",
+                        "due_date": due_date,
+                        "automatic_payment_source": "NONE",
+                    }
+                ],
+                "delivery_method": "SHARE_MANUALLY",
+                "accepted_payment_methods": methods,
+            },
+            idempotency_key=str(uuid.uuid4()),
+        )
+        invoice = response.invoice
+        return {
+            "status": "draft_created",
+            "invoice_id": invoice.id,
+            "invoice_version": getattr(invoice, "version", 0),
+            "invoice_number": invoice.invoice_number,
+            "payment_schedule": payment_schedule,
+            "accepted_payment_methods": accepted_payment_methods,
+            "note": (
+                "Invoice saved as DRAFT. NOT emailed. "
+                "Call publish_invoice to send it and get a working public URL."
+            ),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def publish_invoice(invoice_id: str, invoice_version: int = 0) -> dict:
+    """Publish a Square invoice draft. REQUIRES explicit human approval first.
+
+    This sends the invoice to the customer.
+    """
+    client = _get_client()
+    if not client:
+        return {"error": "Square not configured. Set SQUARE_PROD_ACCESS_TOKEN in .env"}
+    try:
+        response = client.invoices.publish(
+            invoice_id=invoice_id,
+            version=invoice_version,
+            idempotency_key=str(uuid.uuid4()),
+        )
+        invoice = response.invoice
+        return {
+            "status": "published",
+            "invoice_id": invoice.id,
+            "public_url": getattr(invoice, "public_url", None),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def get_customer_by_name(name: str) -> Optional[dict]:
+    """Search Square customers by name. Returns first match or None."""
+    # Use lookup_customer from customer_service for JSON-backed lookup;
+    # this Square search is available as a fallback.
+    client = _get_client()
+    if not client:
+        return None
+    try:
+        response = client.customers.search(
+            query={
+                "filter": {
+                    "reference_id": {"exact": name},
+                }
+            }
+        )
+        customers = response.customers or []
+        if customers:
+            c = customers[0]
+            return {"id": c.id, "name": f"{c.given_name} {c.family_name}".strip()}
+        return None
+    except Exception:
+        return None

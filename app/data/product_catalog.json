@@ -1,0 +1,474 @@
+[
+  {
+    "name": "Viognier",
+    "appellation": "Napa Valley",
+    "vintage": 2023,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 7500,
+    "msrp_case_cents": 90000,
+    "inventory_cases": 18,
+    "tier_unavailable": [
+      "Wholesale"
+    ],
+    "variable_pricing": false
+  },
+  {
+    "name": "Viognier",
+    "appellation": "Napa Valley",
+    "vintage": 2025,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 7500,
+    "msrp_case_cents": 90000,
+    "inventory_cases": 123,
+    "tier_unavailable": [],
+    "variable_pricing": false
+  },
+  {
+    "name": "Viognier",
+    "appellation": "Napa Valley",
+    "vintage": 2023,
+    "size": "375ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": null,
+    "msrp_case_cents": null,
+    "inventory_cases": 48,
+    "tier_unavailable": [],
+    "variable_pricing": true
+  },
+  {
+    "name": "Sauvignon Blanc",
+    "appellation": "California",
+    "vintage": 2024,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 2800,
+    "msrp_case_cents": 33600,
+    "inventory_cases": 372,
+    "tier_unavailable": [
+      "Corporate",
+      "Club Member"
+    ],
+    "variable_pricing": false
+  },
+  {
+    "name": "Sauvignon Blanc",
+    "appellation": "Napa Valley",
+    "vintage": 2025,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 6500,
+    "msrp_case_cents": 78000,
+    "inventory_cases": 198,
+    "tier_unavailable": [
+      "Wholesale"
+    ],
+    "variable_pricing": false
+  },
+  {
+    "name": "Chardonnay",
+    "appellation": "California",
+    "vintage": 2020,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 4500,
+    "msrp_case_cents": 54000,
+    "inventory_cases": 8,
+    "tier_unavailable": [
+      "Corporate",
+      "Club Member"
+    ],
+    "variable_pricing": false
+  },
+  {
+    "name": "Chardonnay",
+    "appellation": "California",
+    "vintage": 2025,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 2800,
+    "msrp_case_cents": 33600,
+    "inventory_cases": 68,
+    "tier_unavailable": [
+      "Corporate",
+      "Club Member"
+    ],
+    "variable_pricing": false
+  },
+  {
+    "name": "Brut Sparkling",
+    "appellation": "Napa Valley",
+    "vintage": 2021,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 8500,
+    "msrp_case_cents": 102000,
+    "inventory_cases": 32,
+    "tier_unavailable": [],
+    "variable_pricing": false
+  },
+  {
+    "name": "Brut Sparkling",
+    "appellation": "Napa Valley",
+    "vintage": 2023,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 8500,
+    "msrp_case_cents": 102000,
+    "inventory_cases": 111,
+    "tier_unavailable": [],
+    "variable_pricing": false
+  },
+  {
+    "name": "Brut Sparkling",
+    "appellation": "Napa Valley",
+    "vintage": 2025,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 8500,
+    "msrp_case_cents": 102000,
+    "inventory_cases": 75,
+    "tier_unavailable": [],
+    "variable_pricing": false
+  },
+  {
+    "name": "Sparkling Rose",
+    "appellation": "NapaValley",
+    "vintage": 2021,
+    "size": "375ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 2800,
+    "msrp_case_cents": 33600,
+    "inventory_cases": 197,
+    "tier_unavailable": [],
+    "variable_pricing": false
+  },
+  {
+    "name": "Rose (shiner)",
+    "appellation": "Napa Valley",
+    "vintage": 2023,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": null,
+    "msrp_case_cents": null,
+    "inventory_cases": 42,
+    "tier_unavailable": [],
+    "variable_pricing": true
+  },
+  {
+    "name": "Rose",
+    "appellation": "Sonoma Valley",
+    "vintage": 2022,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 3200,
+    "msrp_case_cents": 38400,
+    "inventory_cases": 37,
+    "tier_unavailable": [],
+    "variable_pricing": false
+  },
+  {
+    "name": "Rose",
+    "appellation": "California",
+    "vintage": 2025,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 3200,
+    "msrp_case_cents": 38400,
+    "inventory_cases": 0,
+    "tier_unavailable": [
+      "Corporate",
+      "Club Member"
+    ],
+    "variable_pricing": false
+  },
+  {
+    "name": "Zinfandel",
+    "appellation": "Sonoma",
+    "vintage": 2021,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 4500,
+    "msrp_case_cents": 54000,
+    "inventory_cases": 125,
+    "tier_unavailable": [],
+    "variable_pricing": false
+  },
+  {
+    "name": "Zinfandel",
+    "appellation": "Sonoma",
+    "vintage": 2022,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 4500,
+    "msrp_case_cents": 54000,
+    "inventory_cases": 85,
+    "tier_unavailable": [],
+    "variable_pricing": false
+  },
+  {
+    "name": "Pinot Noir",
+    "appellation": "Sonoma",
+    "vintage": 2024,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 4800,
+    "msrp_case_cents": 57600,
+    "inventory_cases": 192,
+    "tier_unavailable": [
+      "Corporate",
+      "Club Member"
+    ],
+    "variable_pricing": false
+  },
+  {
+    "name": "Cuvee Red",
+    "appellation": "Napa Valley",
+    "vintage": 2020,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 6500,
+    "msrp_case_cents": 78000,
+    "inventory_cases": 212,
+    "tier_unavailable": [],
+    "variable_pricing": false
+  },
+  {
+    "name": "Cuvee Red",
+    "appellation": "Napa Valley",
+    "vintage": 2014,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 9500,
+    "msrp_case_cents": 114000,
+    "inventory_cases": 24,
+    "tier_unavailable": [],
+    "variable_pricing": false
+  },
+  {
+    "name": "Cuvee Red",
+    "appellation": "Napa Valley",
+    "vintage": 2014,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 12500,
+    "msrp_case_cents": 150000,
+    "inventory_cases": 34,
+    "tier_unavailable": [
+      "FOB/Export",
+      "Wholesale"
+    ],
+    "variable_pricing": false
+  },
+  {
+    "name": "Red Blend",
+    "appellation": "California",
+    "vintage": 2026,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 3500,
+    "msrp_case_cents": 42000,
+    "inventory_cases": 558,
+    "tier_unavailable": [
+      "Corporate",
+      "Club Member"
+    ],
+    "variable_pricing": false
+  },
+  {
+    "name": "Cabernet Franc",
+    "appellation": "Napa Valley",
+    "vintage": 2024,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 12500,
+    "msrp_case_cents": 150000,
+    "inventory_cases": 42,
+    "tier_unavailable": [],
+    "variable_pricing": false
+  },
+  {
+    "name": "Cabernet Franc",
+    "appellation": "Napa Valley",
+    "vintage": 2023,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 12500,
+    "msrp_case_cents": 150000,
+    "inventory_cases": 42,
+    "tier_unavailable": [],
+    "variable_pricing": false
+  },
+  {
+    "name": "Cabernet Franc",
+    "appellation": "Napa Valley",
+    "vintage": 2022,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 12500,
+    "msrp_case_cents": 150000,
+    "inventory_cases": 42,
+    "tier_unavailable": [],
+    "variable_pricing": false
+  },
+  {
+    "name": "Cabernet Franc",
+    "appellation": "Napa Valley",
+    "vintage": 2021,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 12500,
+    "msrp_case_cents": 150000,
+    "inventory_cases": 24,
+    "tier_unavailable": [],
+    "variable_pricing": false
+  },
+  {
+    "name": "Cabernet Franc",
+    "appellation": "Napa Valley",
+    "vintage": 2018,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 12500,
+    "msrp_case_cents": 150000,
+    "inventory_cases": 15,
+    "tier_unavailable": [],
+    "variable_pricing": false
+  },
+  {
+    "name": "Cabernet Sauvignon (shiners)",
+    "appellation": "Napa Valley",
+    "vintage": 2023,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": null,
+    "msrp_case_cents": null,
+    "inventory_cases": 23,
+    "tier_unavailable": [],
+    "variable_pricing": true
+  },
+  {
+    "name": "Cabernet Sauvignon (limited horse label)",
+    "appellation": "Howell Mountain",
+    "vintage": 2023,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 21500,
+    "msrp_case_cents": 258000,
+    "inventory_cases": 29,
+    "tier_unavailable": [
+      "FOB/Export",
+      "Wholesale"
+    ],
+    "variable_pricing": false
+  },
+  {
+    "name": "Cabernet Sauvignon",
+    "appellation": "Napa Valley",
+    "vintage": 2022,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 19500,
+    "msrp_case_cents": 234000,
+    "inventory_cases": 54,
+    "tier_unavailable": [],
+    "variable_pricing": false
+  },
+  {
+    "name": "Cabernet Sauvignon",
+    "appellation": "Howell Mountain",
+    "vintage": 2022,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 19500,
+    "msrp_case_cents": 234000,
+    "inventory_cases": 48,
+    "tier_unavailable": [],
+    "variable_pricing": false
+  },
+  {
+    "name": "Cabernet Sauvignon (shiners)",
+    "appellation": "Napa Valley",
+    "vintage": 2021,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": null,
+    "msrp_case_cents": null,
+    "inventory_cases": 96,
+    "tier_unavailable": [],
+    "variable_pricing": true
+  },
+  {
+    "name": "Cabernet Sauvignon (shiners)",
+    "appellation": "Napa Valley (JD)",
+    "vintage": 2021,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": null,
+    "msrp_case_cents": null,
+    "inventory_cases": 29,
+    "tier_unavailable": [],
+    "variable_pricing": true
+  },
+  {
+    "name": "Cabernet Sauvignon",
+    "appellation": "Napa Valley",
+    "vintage": 2019,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 19500,
+    "msrp_case_cents": 234000,
+    "inventory_cases": 1,
+    "tier_unavailable": [],
+    "variable_pricing": false
+  },
+  {
+    "name": "Cabernet Sauvignon",
+    "appellation": "Napa Valley",
+    "vintage": 2018,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 19500,
+    "msrp_case_cents": 234000,
+    "inventory_cases": 33,
+    "tier_unavailable": [],
+    "variable_pricing": false
+  },
+  {
+    "name": "Cabernet Sauvignon",
+    "appellation": "Napa Valley",
+    "vintage": 2017,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 19500,
+    "msrp_case_cents": 234000,
+    "inventory_cases": 26,
+    "tier_unavailable": [],
+    "variable_pricing": false
+  },
+  {
+    "name": "Cabernet Sauvignon",
+    "appellation": "Napa Valley",
+    "vintage": 2016,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 19500,
+    "msrp_case_cents": 234000,
+    "inventory_cases": 49,
+    "tier_unavailable": [],
+    "variable_pricing": false
+  },
+  {
+    "name": "Cabernet Sauvignon",
+    "appellation": "Napa Valley",
+    "vintage": 2015,
+    "size": "750ml",
+    "bottles_per_case": 12,
+    "msrp_bottle_cents": 19500,
+    "msrp_case_cents": 234000,
+    "inventory_cases": 55,
+    "tier_unavailable": [],
+    "variable_pricing": false
+  }
+]

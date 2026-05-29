@@ -1,0 +1,1015 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Winefornia</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --red: #7c1f1f;
+      --red-d: #661818;
+      --text: #111;
+      --muted: #aaa;
+      --line: #ebebeb;
+      --ease: cubic-bezier(0.23, 1, 0.32, 1);
+    }
+
+    html, body {
+      height: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #fff;
+      color: var(--text);
+    }
+
+    /* ── Header ── */
+    header {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 10;
+      height: 52px;
+      display: flex; align-items: center; gap: 16px; padding: 0 24px;
+      background: #fff; border-bottom: 1px solid var(--line);
+    }
+    .logo {
+      font-size: 11.5px; font-weight: 700; letter-spacing: .18em;
+      text-transform: uppercase; color: var(--red); flex-shrink: 0;
+    }
+    .tabs { display: flex; gap: 4px; }
+    .tab {
+      padding: 5px 14px; border-radius: 999px;
+      border: 1px solid var(--line); background: #fff;
+      color: var(--muted); font-size: 12.5px; font-weight: 500;
+      cursor: pointer;
+      transition: background 140ms var(--ease), color 140ms var(--ease),
+                  border-color 140ms var(--ease), transform 100ms var(--ease);
+    }
+    .tab:active { transform: scale(0.96); }
+    .tab.on { background: var(--red); color: #fff; border-color: var(--red); }
+    .tab:not(.on):hover { border-color: #ccc; color: var(--text); }
+
+    /* ── Layout ── */
+    main {
+      padding-top: 52px; padding-bottom: 76px;
+      max-width: 680px; width: 100%; margin: 0 auto;
+      min-height: 100vh; display: flex; flex-direction: column;
+    }
+    #chat {
+      flex: 1; display: flex; flex-direction: column; gap: 10px;
+      padding: 28px 20px;
+    }
+
+    /* ── Empty state ── */
+    .empty {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 6px; text-align: center; padding: 80px 20px;
+    }
+    .empty .glyph { font-size: 28px; margin-bottom: 6px; }
+    .empty h2 { font-size: 15px; font-weight: 600; color: var(--text); }
+    .empty p { font-size: 13px; color: var(--muted); max-width: 240px; line-height: 1.6; }
+    .start-btn {
+      margin-top: 16px; padding: 10px 28px; border-radius: 999px;
+      background: var(--red); color: #fff; border: none;
+      font-size: 14px; font-weight: 500; cursor: pointer;
+      transition: background 140ms var(--ease), transform 100ms var(--ease);
+    }
+    .start-btn:hover { background: var(--red-d); }
+    .start-btn:active { transform: scale(0.96); }
+
+    /* ── Messages ── */
+    .msg { display: flex; max-width: 78%; }
+    .msg.agent { align-self: flex-start; }
+    .msg.user  { align-self: flex-end; }
+
+    .bubble {
+      padding: 9px 14px; border-radius: 18px;
+      font-size: 14px; line-height: 1.6;
+      white-space: pre-wrap; word-break: break-word;
+      animation: pop 180ms var(--ease) both;
+    }
+    @keyframes pop {
+      from { opacity: 0; transform: translateY(7px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .agent .bubble {
+      background: #fff; color: var(--text);
+      border: 1px solid var(--line); border-bottom-left-radius: 4px;
+    }
+    .user .bubble {
+      background: var(--red); color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+
+    /* ── Typing indicator ── */
+    .typing .bubble { padding: 13px 16px; }
+    .dots { display: flex; gap: 4px; align-items: center; }
+    .dots span {
+      width: 5px; height: 5px; border-radius: 50%; background: var(--muted);
+      animation: bounce .85s infinite ease-in-out;
+    }
+    .dots span:nth-child(2) { animation-delay: .14s; }
+    .dots span:nth-child(3) { animation-delay: .28s; }
+    @keyframes bounce {
+      0%,80%,100% { transform: scale(.65); opacity:.35; }
+      40%          { transform: scale(1);   opacity: 1; }
+    }
+
+    /* ── Invoice card ── */
+    .invoice-card {
+      align-self: flex-start; width: min(480px, 100%);
+      border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+      animation: pop 200ms var(--ease) both;
+    }
+    .card-head {
+      background: var(--red); color: #fff;
+      padding: 11px 16px; display: flex; justify-content: space-between; align-items: center;
+      gap: 8px;
+    }
+    .card-head h3 { font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; white-space: nowrap; }
+    .card-head span { font-size: 11px; opacity: .65; white-space: nowrap; }
+    .card-body { padding: 14px 16px; background: #fff; }
+    .cust-name { font-size: 14px; font-weight: 600; }
+    .cust-sub  { font-size: 12px; color: var(--muted); margin-bottom: 12px; word-break: break-all; }
+    table.items {
+      width: 100%; border-collapse: collapse; font-size: 13px; margin-bottom: 10px;
+      table-layout: fixed;
+    }
+    table.items th {
+      text-align: left; color: var(--muted); font-weight: 500;
+      font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em;
+      padding-bottom: 7px; border-bottom: 1px solid var(--line);
+    }
+    table.items th:nth-child(2) { width: 60px; text-align: center; }
+    table.items th:nth-child(3) { width: 70px; text-align: right; }
+    table.items td { padding: 7px 0; border-bottom: 1px solid #f5f5f5; vertical-align: top; }
+    table.items td:nth-child(2) { text-align: center; white-space: nowrap; }
+    table.items td:nth-child(3) { text-align: right; white-space: nowrap; }
+    .li-name { font-weight: 500; word-break: break-word; line-height: 1.35; }
+    .li-sub  { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .li-qty  { font-size: 12.5px; }
+    .trow { display: flex; justify-content: space-between; font-size: 13px; padding: 2px 0; color: var(--muted); }
+    .trow .disc { color: #b91c1c; }
+    .trow.big { font-size: 15px; font-weight: 700; color: var(--text); padding-top: 8px; border-top: 1px solid var(--line); margin-top: 4px; }
+    .card-warn { margin-top: 10px; font-size: 12px; color: #92400e; background: #fffbeb; border: 1px solid #fde68a; border-radius: 7px; padding: 7px 10px; }
+
+    /* ── Action buttons ── */
+    .actions {
+      align-self: flex-start; display: flex; flex-wrap: wrap; gap: 7px;
+      animation: pop 200ms var(--ease) both;
+    }
+    .btn {
+      padding: 7px 17px; border-radius: 999px; font-size: 13px; font-weight: 500;
+      cursor: pointer; border: 1px solid var(--line); background: #fff; color: var(--text);
+      transition: background 140ms var(--ease), color 140ms var(--ease),
+                  border-color 140ms var(--ease), transform 100ms var(--ease);
+    }
+    .btn:active { transform: scale(0.96); }
+    .btn:hover { border-color: #ccc; }
+    .btn.p { background: var(--red); color: #fff; border-color: var(--red); }
+    .btn.p:hover { background: var(--red-d); border-color: var(--red-d); }
+    .btn.d { color: #b91c1c; border-color: #fcc; }
+    .btn.d:hover { background: #fff5f5; }
+
+    /* ── Tier wizard ── */
+    .wizard {
+      align-self: flex-start; width: min(440px, 100%);
+      display: flex; flex-direction: column; gap: 14px;
+      animation: pop 200ms var(--ease) both;
+    }
+    .wstep { display: flex; flex-direction: column; gap: 7px; }
+    .wlabel {
+      font-size: 10.5px; font-weight: 600; letter-spacing: .09em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .wrow { display: flex; flex-wrap: wrap; gap: 6px; }
+    .wbtn {
+      padding: 7px 15px; border-radius: 999px; font-size: 13px; font-weight: 500;
+      cursor: pointer; border: 1px solid var(--line); background: #fff; color: var(--text);
+      transition: background 140ms var(--ease), color 140ms var(--ease),
+                  border-color 140ms var(--ease), transform 100ms var(--ease);
+    }
+    .wbtn:hover:not(.sel) { border-color: #ccc; }
+    .wbtn:active { transform: scale(0.96); }
+    .wbtn.sel { background: var(--red); color: #fff; border-color: var(--red); }
+    .wbtn.toggle.sel { background: #fdf2f2; color: var(--red); border-color: #f5c6c6; }
+    .wconfirm {
+      padding: 9px 24px; border-radius: 999px; background: var(--red); color: #fff;
+      border: none; font-size: 13.5px; font-weight: 500; cursor: pointer; align-self: flex-start;
+      transition: background 140ms var(--ease), transform 100ms var(--ease);
+      animation: pop 160ms var(--ease) both;
+    }
+    .wconfirm:hover { background: var(--red-d); }
+    .wconfirm:active { transform: scale(0.96); }
+    .known-tier {
+      font-size: 12px; color: var(--muted); padding: 2px 0;
+    }
+    .known-tier strong { color: var(--text); }
+
+    /* ── Customer confirm card ── */
+    .cust-card {
+      align-self: flex-start; width: min(380px, 100%);
+      border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+      animation: pop 200ms var(--ease) both;
+    }
+    .cust-card-head {
+      background: #fafafa; border-bottom: 1px solid var(--line);
+      padding: 8px 14px;
+      font-size: 10.5px; font-weight: 600; letter-spacing: .09em;
+      text-transform: uppercase; color: var(--muted);
+    }
+    .cust-card-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 3px; }
+    .cust-card-name { font-size: 14px; font-weight: 600; }
+    .cust-card-detail { font-size: 12.5px; color: var(--muted); }
+    .cust-card-tier {
+      display: inline-block; margin-top: 6px;
+      padding: 3px 10px; border-radius: 999px;
+      background: #fdf2f2; color: var(--red);
+      font-size: 11.5px; font-weight: 600;
+    }
+
+    /* ── Input bar ── */
+    footer {
+      position: fixed; bottom: 0; left: 0; right: 0; z-index: 10;
+      background: #fff; border-top: 1px solid var(--line); padding: 12px 20px;
+    }
+    .input-row {
+      max-width: 680px; margin: 0 auto;
+      display: flex; gap: 10px; align-items: flex-end;
+    }
+    #inp {
+      flex: 1; border: 1px solid var(--line); border-radius: 12px;
+      padding: 9px 14px; font-size: 14px; font-family: inherit; resize: none;
+      max-height: 120px; outline: none; background: #fff; color: var(--text);
+      transition: border-color 140ms var(--ease);
+      line-height: 1.5;
+    }
+    #inp:focus { border-color: var(--red); }
+    #inp::placeholder { color: var(--muted); }
+    #inp:disabled { opacity: .35; cursor: not-allowed; }
+
+    #go {
+      width: 37px; height: 37px; border-radius: 50%; flex-shrink: 0;
+      border: none; background: var(--red); cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: background 140ms var(--ease), transform 100ms var(--ease);
+    }
+    #go:hover { background: var(--red-d); }
+    #go:active { transform: scale(0.94); }
+    #go:disabled { background: var(--line); cursor: not-allowed; }
+    #go svg { width: 15px; height: 15px; }
+
+    /* ── Attach button + menu ── */
+    #attach-btn {
+      width: 37px; height: 37px; border-radius: 50%; flex-shrink: 0;
+      border: 1px solid var(--line); background: #fff; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: border-color 140ms var(--ease), background 140ms var(--ease), transform 100ms var(--ease);
+      position: relative;
+    }
+    #attach-btn:hover { border-color: #ccc; background: #fafafa; }
+    #attach-btn:active { transform: scale(0.94); }
+    #attach-btn:disabled { opacity: .35; cursor: not-allowed; }
+    #attach-btn svg { width: 16px; height: 16px; }
+
+    .attach-menu {
+      position: absolute; bottom: calc(100% + 8px); left: 0;
+      background: #fff; border: 1px solid var(--line); border-radius: 12px;
+      overflow: hidden; box-shadow: 0 4px 20px rgba(0,0,0,.08);
+      width: 200px;
+      transform-origin: bottom left;
+      animation: menuIn 160ms var(--ease) both;
+    }
+    @keyframes menuIn {
+      from { opacity: 0; transform: scale(0.95) translateY(4px); }
+      to   { opacity: 1; transform: scale(1) translateY(0); }
+    }
+    .attach-menu button {
+      width: 100%; padding: 11px 16px; border: none; background: transparent;
+      text-align: left; font-size: 13.5px; color: var(--text); cursor: pointer;
+      display: flex; align-items: center; gap: 10px;
+      transition: background 120ms var(--ease);
+    }
+    .attach-menu button:hover { background: #f8f8f8; }
+    .attach-menu button .icon { font-size: 16px; width: 20px; text-align: center; }
+
+    /* ── Email paste modal ── */
+    .overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,.25);
+      display: flex; align-items: center; justify-content: center; z-index: 100;
+      animation: fadeIn 160ms var(--ease) both;
+    }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    .modal {
+      background: #fff; border-radius: 16px; width: min(480px, 90vw);
+      padding: 24px; box-shadow: 0 8px 40px rgba(0,0,0,.12);
+      animation: slideUp 200ms var(--ease) both;
+    }
+    @keyframes slideUp {
+      from { opacity: 0; transform: translateY(12px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .modal h3 { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+    .modal p  { font-size: 13px; color: var(--muted); margin-bottom: 14px; }
+    .modal textarea {
+      width: 100%; height: 160px; border: 1px solid var(--line); border-radius: 10px;
+      padding: 10px 13px; font-size: 13.5px; font-family: inherit; resize: none;
+      outline: none; color: var(--text);
+      transition: border-color 140ms var(--ease);
+    }
+    .modal textarea:focus { border-color: var(--red); }
+    .modal-btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+    .modal-btns .btn { padding: 7px 16px; }
+    /* ── Invoice message editor ── */
+    .msg-editor { width: 100%; margin: 6px 0; }
+    .msg-label  {
+      display: block; font-size: 11px; font-weight: 600; color: #888;
+      text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px;
+    }
+    .msg-hint   { font-weight: 400; color: #bbb; }
+    .msg-editor textarea {
+      width: 100%; box-sizing: border-box;
+      border: 1px solid #e0d6d0; border-radius: 8px;
+      padding: 10px 12px; font-size: 13px; line-height: 1.55;
+      font-family: inherit; resize: vertical; color: #333;
+      background: #fdfbfa;
+    }
+    .msg-editor textarea:focus { outline: none; border-color: #8b2346; }
+
+    /* ── Mobile ── */
+    @media (max-width: 480px) {
+      header { padding: 0 14px; gap: 10px; }
+      .logo { font-size: 10px; }
+      #chat { padding: 16px 12px; gap: 8px; }
+      main { padding-bottom: 68px; }
+      footer { padding: 10px 12px; }
+      .bubble { font-size: 13.5px; padding: 8px 12px; }
+      .invoice-card { width: 100%; }
+      .card-body { padding: 11px 12px; }
+      .card-head { padding: 10px 12px; }
+      .cust-name { font-size: 13px; }
+      table.items { font-size: 12px; }
+      table.items th:nth-child(2) { width: 52px; }
+      table.items th:nth-child(3) { width: 62px; }
+      .trow { font-size: 12px; }
+      .trow.big { font-size: 14px; }
+      .wbtn { font-size: 12.5px; padding: 7px 13px; }
+      .btn  { font-size: 12.5px; padding: 7px 14px; }
+      .wizard { width: 100%; }
+      .cust-card { width: 100%; }
+      .modal { padding: 18px 16px; }
+      .modal textarea { height: 130px; }
+      .actions { gap: 6px; }
+      .msg { max-width: 90%; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Winefornia</div>
+  <nav class="tabs">
+    <button class="tab" id="tab-invoice" onclick="selectTab('invoice')">Invoice</button>
+  </nav>
+</header>
+
+<main><div id="chat"></div></main>
+
+<input type="file" id="pdf-file" accept=".pdf,application/pdf" style="display:none"/>
+
+<footer>
+  <div class="input-row">
+    <button id="attach-btn" disabled title="Attach PDF or paste email">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#888" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round">
+        <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+      </svg>
+    </button>
+    <textarea id="inp" rows="1" placeholder="Describe an order, ask a question…" maxlength="4000" disabled></textarea>
+    <button id="go" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2"
+           stroke-linecap="round" stroke-linejoin="round">
+        <line x1="22" y1="2" x2="11" y2="13"/>
+        <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+      </svg>
+    </button>
+  </div>
+</footer>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let activeTab  = null;   // 'invoice' | null
+let threadId   = null;
+let agentState = null;
+let busy       = false;
+
+const chat      = document.getElementById('chat');
+const attachBtn = document.getElementById('attach-btn');
+const pdfFile   = document.getElementById('pdf-file');
+const inp  = document.getElementById('inp');
+const go   = document.getElementById('go');
+
+// ── Tab selection ──────────────────────────────────────────────────────────
+function selectTab(name) {
+  if (activeTab === name) {
+    // Already active → reset conversation
+    reset();
+    return;
+  }
+  activeTab = name;
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('on'));
+  document.getElementById('tab-' + name).classList.add('on');
+  reset();
+}
+
+function reset() {
+  threadId   = null;
+  agentState = null;
+  chat.innerHTML = '';
+  inp.disabled        = false;
+  go.disabled         = false;
+  attachBtn.disabled  = false;
+  inp.focus();
+  showEmpty();
+}
+
+// ── Empty state ────────────────────────────────────────────────────────────
+function showEmpty() {
+  const el = document.createElement('div');
+  el.className = 'empty';
+  el.innerHTML = `
+    <div class="glyph">🍷</div>
+    <h2>Invoice Agent</h2>
+    <p>Describe an order, ask about pricing, or look up a customer</p>
+    <button class="start-btn" onclick="inp.focus()">Start</button>`;
+  chat.appendChild(el);
+}
+
+// ── Interrupt detection ────────────────────────────────────────────────────
+function which(s) {
+  if (!s) return null;
+  if (s.missing_fields?.length)                                      return 'missing';
+  if (s.customer && s.customer_confirmed === false)                   return 'confirm_customer';
+  if (s.customer && !s.tier_name)                                    return 'tier';
+  // Only show approval when no decision has been made yet
+  if (s.invoice_preview && !s.approval && !s.square_invoice_id)      return 'approval';
+  if (s.square_invoice_id && !s.send_decision)                       return 'send';
+  if (s.send_decision === 'send' && !s.email_receipt_decision)       return 'email';
+  return null;
+}
+
+// ── Render agent state ─────────────────────────────────────────────────────
+function render(s) {
+  const ix = which(s);
+
+  // Always show step-status from the agent before the interrupt widget
+  const stepMsg = s.final_response;
+
+  if (ix === 'missing') {
+    addAgent(stepMsg || `I need a bit more info — ${s.missing_fields.join(', ')}.`);
+    return;
+  }
+
+  if (ix === 'confirm_customer') {
+    const c = s.customer || {};
+    if (stepMsg) addAgent(stepMsg);
+    addCustomerConfirmCard(c);
+    addActions([
+      { label: "Yes, that's them",       val: 'yes', cls: 'p' },
+      { label: 'No, different customer', val: 'no',  cls: 'd' },
+    ], /* lockInput */ true);
+    return;
+  }
+
+  if (ix === 'tier') {
+    const c    = s.customer || {};
+    const name = c.full_name || c.company || 'the customer';
+    const known = c.tier_name;
+    if (stepMsg) addAgent(stepMsg);
+    addAgent(known
+      ? `Tier on file: ${known}. Confirm or update pricing below:`
+      : `No tier on file for ${name}. Select pricing:`);
+    addTierWizard(s);
+    return;
+  }
+
+  if (ix === 'approval') {
+    addAgent('Ready to invoice — review and approve:');
+    addCard(s);
+    addMessageEditor();
+    addApprovalActions();
+    return;
+  }
+
+  if (ix === 'send') {
+    const c   = s.customer || {};
+    const nm  = c.full_name || c.company || 'customer';
+    const tot = ((s.invoice_preview?.total_before_tax_cents || 0) / 100).toFixed(2);
+    addAgent(`Draft saved in Square — ${nm} · $${tot}\nID: ${s.square_invoice_id}`);
+    addActions([
+      { label: 'Send to Client', val: 'send',  cls: 'p' },
+      { label: 'Keep as Draft',  val: 'draft' },
+    ], /* lockInput */ true);
+    return;
+  }
+
+  if (ix === 'email') {
+    const c  = s.customer || {};
+    const em = c.email ? ` (${c.email})` : '';
+    const nm = c.full_name || c.company || 'client';
+    addAgent(`Invoice sent. Email receipt to ${nm}${em}?`);
+    addActions([
+      { label: 'Send Receipt', val: 'send', cls: 'p' },
+      { label: 'Skip',         val: 'skip' },
+    ], /* lockInput */ true);
+    return;
+  }
+
+  addAgent(s.final_response || 'Done.');
+}
+
+// ── DOM builders ───────────────────────────────────────────────────────────
+function clearEmpty() { chat.querySelector('.empty')?.remove(); }
+function scroll()     { setTimeout(() => chat.scrollTo({ top: chat.scrollHeight, behavior: 'smooth' }), 30); }
+
+function addAgent(text) {
+  clearEmpty();
+  const d = document.createElement('div');
+  d.className = 'msg agent';
+  d.innerHTML = `<div class="bubble">${esc(text)}</div>`;
+  chat.appendChild(d); scroll();
+}
+
+function addUser(text) {
+  clearEmpty();
+  const d = document.createElement('div');
+  d.className = 'msg user';
+  d.innerHTML = `<div class="bubble">${esc(text)}</div>`;
+  chat.appendChild(d); scroll();
+}
+
+function addTyping() {
+  const d = document.createElement('div');
+  d.className = 'msg agent typing';
+  d.innerHTML = `<div class="bubble"><div class="dots"><span></span><span></span><span></span></div></div>`;
+  chat.appendChild(d); scroll(); return d;
+}
+
+function addCard(s) {
+  const c     = s.customer || {};
+  const pr    = s.invoice_preview || {};
+  const li    = s.line_items || [];
+  const tier  = s.tier_name || pr.tier_name || '';
+  const sched = (s.payment_schedule || pr.payment_schedule || '').replace(/_/g, ' ');
+  const name  = c.full_name || c.company || 'Customer';
+  const co    = (c.company && c.company !== c.full_name) ? c.company : '';
+  const em    = c.email || '';
+  const warns = (s.pricing_result || {}).warnings || [];
+
+  const rows = li.map(i => {
+    // Correct field names from LineItem schema:
+    // product_name, vintage, quantity, unit_type, final_unit_price_cents, line_total_cents
+    const qty  = parseInt(i.quantity, 10);
+    const ut   = i.unit_type || 'bottle';
+    const qtyLabel = `${qty} ${ut}${qty !== 1 ? 's' : ''}`;
+    const product  = [i.product_name, i.vintage].filter(Boolean).join(' ');
+    const perUnit  = i.final_unit_price_cents
+      ? `${$$(i.final_unit_price_cents)}/btl`
+      : '';
+    return `<tr>
+      <td>
+        <div class="li-name">${esc(product)}</div>
+        ${perUnit ? `<div class="li-sub">${esc(perUnit)}</div>` : ''}
+      </td>
+      <td class="li-qty">${esc(qtyLabel)}</td>
+      <td>${$$(i.line_total_cents)}</td>
+    </tr>`;
+  }).join('');
+
+  const disc = pr.discount_cents || 0;
+  const ship = pr.shipping_cents;
+
+  const el = document.createElement('div');
+  el.className = 'invoice-card';
+  el.innerHTML = `
+    <div class="card-head">
+      <h3>Invoice${tier ? ' · ' + esc(tier) : ''}</h3>
+      <span>${esc(sched)}</span>
+    </div>
+    <div class="card-body">
+      <div class="cust-name">${esc(name)}</div>
+      <div class="cust-sub">${[co,em].filter(Boolean).map(esc).join(' · ')}</div>
+      <table class="items">
+        <thead><tr><th>Product</th><th>Qty</th><th>Total</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="trow"><span>Subtotal</span><span>${$$(pr.subtotal_cents)}</span></div>
+      ${disc > 0 ? `<div class="trow"><span>Discount</span><span class="disc">−${$$(disc)}</span></div>` : ''}
+      <div class="trow"><span>Shipping</span><span>${ship === 0 ? 'Waived' : ship == null ? 'TBD' : $$(ship)}</span></div>
+      <div class="trow big"><span>Total</span><span>${$$(pr.total_before_tax_cents)}</span></div>
+      ${warns.length ? `<div class="card-warn">⚠ ${warns.map(esc).join('<br>')}</div>` : ''}
+    </div>`;
+  chat.appendChild(el); scroll();
+}
+
+const DEFAULT_MSG =
+  "We appreciate your business. Please reach out if you have any questions!\n\n" +
+  "Payment Method:\n" +
+  "Check: \n" +
+  "Please make checks payable to: Winefornia LLC\n" +
+  "2554 Corte Del Marques Walnut Creek CA 94598\n\n" +
+  "Venmo ID: winefornia\n\n" +
+  "Credit Card Payments & ACH Bank Transfer are also available. \n\n" +
+  "Thank you again! ";
+
+function addMessageEditor() {
+  const el = document.createElement('div');
+  el.className = 'msg-editor';
+  el.id = 'invoice-msg-editor';
+
+  const lbl = document.createElement('label');
+  lbl.className = 'msg-label';
+  lbl.innerHTML = 'Invoice Message <span class="msg-hint">(editable)</span>';
+
+  const ta = document.createElement('textarea');
+  ta.id = 'invoice-msg-ta';
+  ta.rows = 8;
+  ta.value = DEFAULT_MSG;  // set value directly to preserve newlines correctly
+
+  el.appendChild(lbl);
+  el.appendChild(ta);
+  chat.appendChild(el); scroll();
+}
+
+function addApprovalActions() {
+  inp.disabled = true; go.disabled = true;
+  inp.placeholder = 'Use the buttons above…';
+
+  const wrap = document.createElement('div');
+  wrap.className = 'actions';
+
+  function cleanup() {
+    document.getElementById('invoice-msg-editor')?.remove();
+    wrap.remove();
+    inp.placeholder = 'Describe an order, ask a question…';
+  }
+
+  const approve = document.createElement('button');
+  approve.className = 'btn p'; approve.textContent = 'Approve';
+  approve.onclick = () => {
+    const msg = document.getElementById('invoice-msg-ta')?.value ?? DEFAULT_MSG;
+    cleanup();
+    addUser('Approve');
+    resume(JSON.stringify({ decision: 'approved', message: msg }));
+  };
+
+  const edit = document.createElement('button');
+  edit.className = 'btn'; edit.textContent = 'Edit';
+  edit.onclick = () => {
+    cleanup();
+    threadId = null; agentState = null;
+    inp.disabled = false; go.disabled = false;
+    addAgent("What needs to change? Paste the updated order and I'll re-process from scratch.");
+    inp.focus();
+  };
+
+  const reject = document.createElement('button');
+  reject.className = 'btn d'; reject.textContent = 'Reject';
+  reject.onclick = () => {
+    cleanup();
+    addUser('Reject');
+    resume('rejected');
+  };
+
+  [approve, edit, reject].forEach(b => wrap.appendChild(b));
+  chat.appendChild(wrap); scroll();
+}
+
+function addActions(btns, lockInput = false) {
+  const wrap = document.createElement('div');
+  wrap.className = 'actions';
+
+  // Disable text input while action buttons are visible (prevents typing into interrupts)
+  if (lockInput) {
+    inp.disabled = true;
+    go.disabled = true;
+    inp.placeholder = 'Use the buttons above…';
+  }
+
+  btns.forEach(({ label, val, cls = '' }) => {
+    const b = document.createElement('button');
+    b.className = `btn ${cls}`;
+    b.textContent = label;
+    b.onclick = () => {
+      wrap.remove();
+      // Restore placeholder
+      inp.placeholder = 'Describe an order, ask a question…';
+
+      // Edit: reset state so Cecil can resubmit cleanly
+      if (val === '__edit__') {
+        threadId   = null;
+        agentState = null;
+        inp.disabled = false;
+        go.disabled  = false;
+        addAgent("What needs to change? Paste the updated order and I'll re-process from scratch.");
+        inp.focus();
+        return;
+      }
+
+      addUser(label);
+      resume(val);
+    };
+    wrap.appendChild(b);
+  });
+  chat.appendChild(wrap); scroll();
+}
+
+function addCustomerConfirmCard(c) {
+  const name = c.full_name || c.company || 'Unknown';
+  const details = [c.company, c.email, c.phone].filter(Boolean);
+  const el = document.createElement('div');
+  el.className = 'cust-card';
+  el.innerHTML = `
+    <div class="cust-card-head">Potential match</div>
+    <div class="cust-card-body">
+      <div class="cust-card-name">${esc(name)}</div>
+      ${details.map(d => `<div class="cust-card-detail">${esc(d)}</div>`).join('')}
+      ${c.tier_name ? `<span class="cust-card-tier">${esc(c.tier_name)}</span>` : ''}
+    </div>`;
+  chat.appendChild(el); scroll();
+}
+
+function addTierWizard(state) {
+  const knownTier = (state.customer || {}).tier_name || null;
+
+  const TIERS = ['Wholesale','Corporate','Club Member','Employee','Direct','FOB/Export'];
+  const SCHEDULES = [
+    ['Upon Receipt', 'UPON_RECEIPT'],
+    ['Net 7',  'NET_7'],
+    ['Net 14', 'NET_14'],
+    ['Net 30', 'NET_30'],
+  ];
+  const METHODS = [
+    ['Card',          'CARD'],
+    ['Bank Transfer', 'BANK_ACCOUNT'],
+  ];
+
+  let selTier     = knownTier;
+  let selSchedule = null;
+  let selMethods  = new Set(['CARD', 'BANK_ACCOUNT']); // default both
+
+  const el = document.createElement('div');
+  el.className = 'wizard';
+  chat.appendChild(el);
+  scroll();
+
+  function draw() {
+    el.innerHTML = '';
+
+    // Step 1 — Tier
+    el.appendChild(makeStep('Pricing tier', TIERS.map(t => ({
+      label: t, sel: selTier === t,
+      onclick() { selTier = t; draw(); },
+    }))));
+
+    // Step 2 — Schedule (only after tier chosen)
+    if (selTier) {
+      el.appendChild(makeStep('Payment terms', SCHEDULES.map(([label, val]) => ({
+        label, sel: selSchedule === val,
+        onclick() { selSchedule = val; draw(); },
+      }))));
+    }
+
+    // Step 3 — Methods + Confirm (only after schedule chosen)
+    if (selTier && selSchedule) {
+      el.appendChild(makeStep('Payment methods', METHODS.map(([label, val]) => ({
+        label, sel: selMethods.has(val), toggle: true,
+        onclick() {
+          selMethods.has(val) ? selMethods.delete(val) : selMethods.add(val);
+          draw();
+        },
+      }))));
+
+      if (selMethods.size > 0) {
+        const btn = document.createElement('button');
+        btn.className = 'wconfirm';
+        btn.textContent = 'Confirm';
+        btn.onclick = () => {
+          const decision = `${selTier}, ${selSchedule}, ${[...selMethods].join('+')}`;
+          const display  = `${selTier} · ${selSchedule.replace(/_/g,' ')} · ${[...selMethods].map(m => m === 'BANK_ACCOUNT' ? 'Bank' : 'Card').join(' + ')}`;
+          el.remove();
+          addUser(display);
+          resume(decision);
+        };
+        el.appendChild(btn);
+      }
+    }
+
+    scroll();
+  }
+
+  function makeStep(label, buttons) {
+    const div = document.createElement('div');
+    div.className = 'wstep';
+    const lbl = document.createElement('div');
+    lbl.className = 'wlabel';
+    lbl.textContent = label;
+    div.appendChild(lbl);
+    const row = document.createElement('div');
+    row.className = 'wrow';
+    buttons.forEach(({ label, sel, toggle, onclick }) => {
+      const b = document.createElement('button');
+      b.className = 'wbtn' + (sel ? ' sel' : '') + (toggle ? ' toggle' : '');
+      b.textContent = label;
+      b.onclick = onclick;
+      row.appendChild(b);
+    });
+    div.appendChild(row);
+    return div;
+  }
+
+  draw();
+}
+
+// ── API ────────────────────────────────────────────────────────────────────
+async function callRun(text) {
+  // If the previous thread has a finalized approval (approved/rejected) or
+  // a completed send, start fresh so old invoice_preview doesn't bleed in.
+  if (agentState?.approval || agentState?.send_decision) {
+    threadId   = null;
+    agentState = null;
+  }
+  if (!threadId) threadId = 'web_' + Math.random().toString(36).slice(2,10);
+
+  const t = addTyping(); setBusy(true);
+  try {
+    const r = await fetch('/agents/invoice/run', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ thread_id: threadId, message: text, sender_id: 'web_ui' }),
+    });
+    t.remove();
+    const data = await r.json();
+    if (!r.ok) { addAgent(data.final_response || `Error ${r.status}`); return; }
+    agentState = data; render(agentState);
+  } catch(e) { t.remove(); addAgent(`Error: ${e.message}`); }
+  finally { setBusy(false); }
+}
+
+async function resume(decision) {
+  const t = addTyping(); setBusy(true);
+  try {
+    const r = await fetch('/agents/invoice/resume', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ thread_id: threadId, decision }),
+    });
+    t.remove();
+    const data = await r.json();
+    if (!r.ok) { addAgent(data.final_response || `Error ${r.status}`); return; }
+    agentState = data; render(agentState);
+  } catch(e) { t.remove(); addAgent(`Error: ${e.message}`); }
+  finally { setBusy(false); }
+}
+
+// ── Submit ─────────────────────────────────────────────────────────────────
+function submit() {
+  if (!activeTab || busy) return;
+  const text = inp.value.trim();
+  if (!text) return;
+  inp.value = ''; resize();
+  addUser(text);
+  const ix = which(agentState);
+  // Active interrupts: pass text as resume decision
+  // Everything else (chat, new invoice, no state): start a new agent turn
+  if (ix === 'missing' || ix === 'tier' || ix === 'confirm_customer') {
+    resume(text);
+  } else {
+    callRun(text);
+  }
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+function setBusy(v) {
+  busy = v;
+  attachBtn.disabled = v;
+  if (v) {
+    inp.disabled = true;
+    go.disabled  = true;
+  } else {
+    // Re-enable input only when not in a button-only interrupt
+    const ix = which(agentState);
+    const locked = ix === 'approval' || ix === 'send' || ix === 'email' || ix === 'confirm_customer';
+    inp.disabled = locked;
+    go.disabled  = locked;
+    if (!locked) inp.placeholder = 'Describe an order, ask a question…';
+  }
+}
+function resize()   { inp.style.height = 'auto'; inp.style.height = Math.min(inp.scrollHeight, 120) + 'px'; }
+function esc(s)     { return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>'); }
+function $$(n)      { return '$' + ((n||0)/100).toFixed(2); }
+
+// ── Events ─────────────────────────────────────────────────────────────────
+go.onclick = submit;
+inp.addEventListener('keydown', e => { if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); submit(); } });
+inp.addEventListener('input', resize);
+
+// ── Attach menu ────────────────────────────────────────────────────────────
+let attachMenu = null;
+
+function toggleAttachMenu() {
+  if (attachMenu) { closeAttachMenu(); return; }
+  attachMenu = document.createElement('div');
+  attachMenu.className = 'attach-menu';
+  attachMenu.innerHTML = `
+    <button onclick="openPdf()"><span class="icon">📄</span>Upload PDF</button>
+    <button onclick="openEmailModal()"><span class="icon">✉️</span>Paste email</button>`;
+  attachBtn.style.position = 'relative';
+  attachBtn.appendChild(attachMenu);
+  setTimeout(() => document.addEventListener('click', closeOnOutside), 0);
+}
+
+function closeAttachMenu() {
+  attachMenu?.remove(); attachMenu = null;
+  document.removeEventListener('click', closeOnOutside);
+}
+
+function closeOnOutside(e) {
+  if (!attachBtn.contains(e.target)) closeAttachMenu();
+}
+
+// ── PDF upload ──────────────────────────────────────────────────────────────
+function openPdf() {
+  closeAttachMenu(); pdfFile.click();
+}
+
+pdfFile.addEventListener('change', async () => {
+  const file = pdfFile.files[0];
+  if (!file) return;
+  pdfFile.value = '';
+  clearEmpty();
+  addUser(`📄 ${file.name}`);
+  const t = addTyping(); setBusy(true);
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('sender_id', 'web_ui');
+    if (threadId) fd.append('thread_id', threadId);
+    const r = await fetch('/intake/pdf', { method: 'POST', body: fd });
+    t.remove();
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    threadId   = data.thread_id || threadId;
+    agentState = data;
+    render(agentState);
+  } catch(e) { t.remove(); addAgent(`Couldn't read that PDF: ${e.message}`); }
+  finally { setBusy(false); }
+});
+
+// ── Email paste modal ───────────────────────────────────────────────────────
+function openEmailModal() {
+  closeAttachMenu();
+  const overlay = document.createElement('div');
+  overlay.className = 'overlay';
+  overlay.innerHTML = `
+    <div class="modal">
+      <h3>Paste forwarded email</h3>
+      <p>Paste the full email text — subject, body, anything relevant.</p>
+      <textarea id="email-body" placeholder="Subject: …\n\nHi, I'd like to order…"></textarea>
+      <div class="modal-btns">
+        <button class="btn" onclick="this.closest('.overlay').remove()">Cancel</button>
+        <button class="btn p" onclick="submitEmail(this)">Submit</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#email-body').focus();
+}
+
+async function submitEmail(btn) {
+  const overlay = btn.closest('.overlay');
+  const text    = overlay.querySelector('#email-body').value.trim();
+  if (!text) return;
+  overlay.remove();
+  clearEmpty();
+  addUser('✉️ Forwarded email');
+  const t = addTyping(); setBusy(true);
+  try {
+    const r = await fetch('/intake', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text, sender_id: 'web_ui', thread_id: threadId || undefined }),
+    });
+    t.remove();
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    threadId   = data.thread_id || threadId;
+    agentState = data;
+    render(agentState);
+  } catch(e) { t.remove(); addAgent(`Error: ${e.message}`); }
+  finally { setBusy(false); }
+}
+
+// ── Events ─────────────────────────────────────────────────────────────────
+attachBtn.onclick = (e) => { e.stopPropagation(); toggleAttachMenu(); };
+
+// ── Init: auto-select Invoice ───────────────────────────────────────────────
+selectTab('invoice');
+</script>
+</body>
+</html>

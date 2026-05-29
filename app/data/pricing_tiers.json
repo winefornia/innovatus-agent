@@ -1,0 +1,75 @@
+[
+  {
+    "tier_number": 1,
+    "name": "FOB/Export",
+    "channel": "B2B",
+    "discount_percent": 50,
+    "msrp_multiplier": 0.5,
+    "requires_human_confirmation": false
+  },
+  {
+    "tier_number": 2,
+    "name": "Wholesale",
+    "channel": "B2B",
+    "discount_percent": 30,
+    "msrp_multiplier": 0.7,
+    "requires_human_confirmation": false
+  },
+  {
+    "tier_number": 3,
+    "name": "Corporate",
+    "channel": "B2B",
+    "discount_percent": 20,
+    "msrp_multiplier": 0.8,
+    "requires_human_confirmation": false
+  },
+  {
+    "tier_number": 4,
+    "name": "Employee",
+    "channel": "DTC",
+    "discount_percent": 50,
+    "msrp_multiplier": 0.5,
+    "requires_human_confirmation": false
+  },
+  {
+    "tier_number": 5,
+    "name": "Wholesale Ambassadors",
+    "channel": "DTC",
+    "discount_percent": 30,
+    "msrp_multiplier": 0.7,
+    "requires_human_confirmation": false
+  },
+  {
+    "tier_number": 6,
+    "name": "Corporate Lead",
+    "channel": "DTC",
+    "discount_percent": 20,
+    "msrp_multiplier": 0.8,
+    "requires_human_confirmation": false
+  },
+  {
+    "tier_number": 7,
+    "name": "Club Member",
+    "channel": "DTC",
+    "discount_percent": 15,
+    "msrp_multiplier": 0.85,
+    "requires_human_confirmation": false
+  },
+  {
+    "tier_number": 8,
+    "name": "Other",
+    "channel": "DTC",
+    "discount_percent": 15,
+    "msrp_multiplier": 0.85,
+    "requires_human_confirmation": true,
+    "notes": "15% or less \u2014 discount must be confirmed by Cecil/Audrey"
+  },
+  {
+    "tier_number": 9,
+    "name": "Direct",
+    "channel": "DTC",
+    "discount_percent": 0,
+    "msrp_multiplier": 1.0,
+    "requires_human_confirmation": false
+  }
+]

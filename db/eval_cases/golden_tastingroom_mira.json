@@ -1,0 +1,12 @@
+{
+  "eval_id": "golden_tastingroom_mira",
+  "case_id": null,
+  "source": "manual",
+  "input": "Subject: Form Submission - Wine tasting Booking\nFrom: Squarespace <form-submission@squarespace.info>\n\nSent via form submission from INNOVATUS WINE NAPA VALLEY\nName: Mira Park\nEmail: mirasopa@gmail.com\nPhone: (202) 734-8246\nDate Requested : May 09, 2026\nTime: 2:30pm\nNumber of Guests : 2\nProduction Tour and Tasting : Production Tour and Tasting with Winemaker ($110 per person)\nQuestions / Comments: N/A",
+  "expected_intent": "tastingroom_reservation",
+  "expected_agent": "tastingroom_agent",
+  "expected_output_contains": ["NEEDS_FACILITY_CHECK", "ask_josh_availability"],
+  "should_not_contain": ["FINAL_CONFIRMED"],
+  "risk_level": "medium",
+  "tags": ["golden", "tastingroom"]
+}

@@ -1,0 +1,17 @@
+{
+  "eval_id": "golden_event_invoice_001",
+  "case_id": null,
+  "source": "golden",
+  "input": "Can you invoice the people from yesterday's wine tasting event?",
+  "expected_intent": "invoice_creation",
+  "expected_agent": "invoice_agent",
+  "note": "Event-phrased invoice requests route to invoice_agent (event_invoice_agent was removed). The invoice agent handles this as a standard invoice_creation with missing fields (guest list, items) — it will interrupt to ask for them.",
+  "should_reach_node": null,
+  "expected_output_contains": [],
+  "should_not_contain": ["error"],
+  "risk_level": "medium",
+  "tags": ["golden", "invoice_creation"],
+  "failure_type": null,
+  "failure_description": null,
+  "suggested_patch": null
+}
