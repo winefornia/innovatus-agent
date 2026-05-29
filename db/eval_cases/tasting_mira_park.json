@@ -1,0 +1,53 @@
+{
+  "case_id": "TASTING-20260509-2G-MIRA-PARK",
+  "description": "Mira Park — full booking May-June 2026 (squarespace form → final confirmation, 16 emails)",
+  "checkpoints": [
+    {
+      "after_source_message_id": "19df0672d1adc9e9",
+      "expected_message_type": "squarespace_form",
+      "expected_client_intent": "requested_slot",
+      "expected_facility_status": "unknown",
+      "expected_payment_status": "not_started",
+      "expected_action": "draft_josh_availability_request",
+      "notes": "Squarespace form arrives — agent should ask Josh about May 9 availability"
+    },
+    {
+      "after_source_message_id": "19df9f9e60702141",
+      "expected_facility_status": "available",
+      "expected_client_intent": "requested_alternative",
+      "expected_action": "draft_client_reply",
+      "notes": "Josh provides open slots — agent should offer client an alternative date"
+    },
+    {
+      "after_source_message_id": "19dff89610d3bf27",
+      "expected_client_intent": "accepted_slot",
+      "expected_facility_status": "available",
+      "expected_action": "draft_josh_booking_request",
+      "notes": "Client accepts June 7 2:30 PM — agent should confirm booking with Josh"
+    },
+    {
+      "after_source_message_id": "19e040fe53faf6c9",
+      "expected_facility_status": "confirmed",
+      "expected_client_intent": "accepted_slot",
+      "expected_action": "draft_invoice_message",
+      "notes": "Josh confirms (grouped email) — agent should send invoice"
+    },
+    {
+      "after_source_message_id": "19e04cba91d71bb4",
+      "expected_payment_status": "paid",
+      "expected_facility_status": "confirmed",
+      "expected_client_intent": "accepted_slot",
+      "expected_action": "draft_final_confirmation",
+      "guard_must_block_if_facility_inferred_below": 0.85,
+      "notes": "Square invoice paid — agent should send final confirmation. Guard must block if facility evidence is weak inferred_match."
+    },
+    {
+      "after_source_message_id": "19e1e44269f96304",
+      "expected_confirmation_status": "final_sent",
+      "expected_payment_status": "paid",
+      "expected_action": "none",
+      "expected_final_state": "FINAL_CONFIRMED",
+      "notes": "Final confirmation sent — case is fully resolved, no further action needed"
+    }
+  ]
+}

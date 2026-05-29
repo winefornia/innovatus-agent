@@ -179,6 +179,51 @@ class FailureLabel:
 
 
 @dataclass
+class RawEmailEvent:
+    """Raw inbound email — stored before any processing for replay."""
+
+    gmail_message_id: str
+    gmail_thread_id: str = ""
+    subject: str = ""
+    from_email: str = ""
+    to_email: str = ""
+    body: str = ""
+    raw_payload: dict = field(default_factory=dict)
+    event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+
+@dataclass
+class ValidationResultRecord:
+    """Audit record of what the safety guards allowed or blocked."""
+
+    case_id: str
+    tool_name: str
+    allowed: bool
+    source_message_id: str = ""
+    judgment_record_id: str = ""
+    block_reason: str = ""
+    guardrails_triggered: list = field(default_factory=list)
+    approval_required: bool = True
+    interrupt_level: str = "none"
+    result_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+
+@dataclass
+class ExecutionResultRecord:
+    """Structured result of a tool execution attempt."""
+
+    case_id: str
+    tool_name: str
+    ok: bool
+    action_request_id: str = ""
+    result_json: dict = field(default_factory=dict)
+    error_type: str = ""
+    error_message: str = ""
+    created_resource_id: str = ""
+    result_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+
+@dataclass
 class CaseJudgmentRecord:
     """Persisted snapshot of a CaseJudgment — one row per email processed."""
 

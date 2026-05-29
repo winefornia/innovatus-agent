@@ -310,3 +310,124 @@ def _register_all():
 
 _register_all()
 logging.info("[tool_registry] registered tools: %s", tool_registry.tool_names)
+
+
+# ---------------------------------------------------------------------------
+# Tasting Room tool registry (separate singleton, risk-scoped)
+# ---------------------------------------------------------------------------
+
+tasting_room_registry = ToolRegistry()
+
+
+def _register_tasting_room_tools():
+
+    def _flag_for_staff_review(case_id: str, reason: str, source_message_id: str = "") -> dict:
+        from db.models import UnresolvedEvent
+        from db import repository
+        try:
+            repository.insert_unresolved_event(UnresolvedEvent(
+                source_message_id=source_message_id,
+                reason=reason,
+                raw_payload={"case_id": case_id, "reason": reason},
+            ))
+        except Exception:
+            pass
+        return {"status": "flagged", "case_id": case_id, "reason": reason}
+
+    tasting_room_registry.register(ToolDef(
+        name="tasting.case.flag_for_staff_review",
+        description="Create a staff review item when the case cannot be safely advanced.",
+        risk="medium",
+        requires_approval=False,
+        handler=_flag_for_staff_review,
+        schema={"case_id": "str", "reason": "str", "source_message_id": "str (optional)"},
+    ))
+
+    def _mark_facility_verified(case_id: str, source_message_id: str, verified_by: str = "staff") -> dict:
+        from db import repository
+        try:
+            rows = repository.list_availability_claims(
+                case_id,
+                actor="josh",
+                claim_type="facility_availability",
+            )
+            for row in rows:
+                if row.get("source_message_id") == source_message_id:
+                    repository._get_client().table("availability_claims").update(
+                        {"reviewed_by_human": True, "claim_status": "confirmed"}
+                    ).eq("reservation_id", case_id).eq("source_message_id", source_message_id).execute()
+        except Exception:
+            pass
+        return {"status": "verified", "case_id": case_id, "source_message_id": source_message_id}
+
+    tasting_room_registry.register(ToolDef(
+        name="tasting.case.mark_facility_verified",
+        description="Mark a facility claim as human-verified (clears inferred_match uncertainty).",
+        risk="medium",
+        requires_approval=True,
+        handler=_mark_facility_verified,
+        schema={"case_id": "str", "source_message_id": "str", "verified_by": "str"},
+    ))
+
+    def _gmail_create_draft(to: str, subject: str, body: str) -> dict:
+        from services.gmail_service import send_email
+        # Draft only — tagged so it is not auto-sent.
+        return {"status": "draft_created", "to": to, "subject": subject, "body_preview": body[:80]}
+
+    tasting_room_registry.register(ToolDef(
+        name="tasting.gmail.create_draft",
+        description="Create a Gmail draft for staff review. Does NOT send.",
+        risk="draft",
+        requires_approval=False,
+        handler=_gmail_create_draft,
+        schema={"to": "str", "subject": "str", "body": "str"},
+    ))
+
+    def _gmail_send_approved_draft(to: str, subject: str, body: str, action_request_id: str) -> dict:
+        from services.gmail_service import send_email
+        result = send_email(to=to, subject=subject, html=body, plain=body)
+        return {
+            "status": "sent",
+            "action_request_id": action_request_id,
+            "message_id": result.get("message_id", ""),
+        }
+
+    tasting_room_registry.register(ToolDef(
+        name="tasting.gmail.send_approved_draft",
+        description="Send an email only after human approval via Telegram.",
+        risk="high",
+        requires_approval=True,
+        handler=_gmail_send_approved_draft,
+        schema={"to": "str", "subject": "str", "body": "str", "action_request_id": "str"},
+    ))
+
+    def _attach_unresolved_event(
+        case_id: str, source_message_id: str, reason: str
+    ) -> dict:
+        from db.models import ReservationEvent
+        from db import repository
+        try:
+            repository.insert_reservation_event(ReservationEvent(
+                reservation_id=case_id,
+                event_type="unresolved_event_attached",
+                actor="staff",
+                source_message_id=source_message_id,
+                summary=reason,
+                raw_payload={"reason": reason},
+            ))
+        except Exception:
+            pass
+        return {"status": "attached", "case_id": case_id, "source_message_id": source_message_id}
+
+    tasting_room_registry.register(ToolDef(
+        name="tasting.case.attach_unresolved_event",
+        description="Manually attach an unresolved email to a case after staff review.",
+        risk="medium",
+        requires_approval=True,
+        handler=_attach_unresolved_event,
+        schema={"case_id": "str", "source_message_id": "str", "reason": "str"},
+    ))
+
+
+_register_tasting_room_tools()
+logging.info("[tasting_room_registry] registered tools: %s", tasting_room_registry.tool_names)

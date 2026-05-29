@@ -51,6 +51,7 @@ class CaseDeskState(TypedDict, total=False):
     _bundle: dict[str, Any]
     _judgment: dict[str, Any]
     _judgment_record_id: str
+    _validation_result_id: str
 
     # --- output ---
     action_id: str
@@ -63,12 +64,31 @@ class CaseDeskState(TypedDict, total=False):
 # ---------------------------------------------------------------------------
 
 def store_raw_event(state: CaseDeskState) -> CaseDeskState:
-    """Record inbound email arrival — pure ingestion, no intelligence."""
-    logger.debug(
-        "case_desk: inbound msg=%s thread=%s",
-        state.get("gmail_message_id"),
-        state.get("gmail_thread_id"),
-    )
+    """Persist inbound email to raw_email_events. Idempotent — safe to re-run."""
+    from db.models import RawEmailEvent
+    from db import repository
+
+    mid = state.get("gmail_message_id", "")
+    logger.debug("case_desk: store_raw_event msg=%s thread=%s", mid, state.get("gmail_thread_id"))
+
+    if mid:
+        try:
+            repository.insert_raw_email_event(RawEmailEvent(
+                gmail_message_id=mid,
+                gmail_thread_id=state.get("gmail_thread_id", ""),
+                subject=state.get("subject", ""),
+                from_email=state.get("from_email", ""),
+                to_email=state.get("to_email", ""),
+                body=state.get("body") or state.get("raw_email", ""),
+                raw_payload={
+                    "subject": state.get("subject"),
+                    "from": state.get("from_email"),
+                    "to": state.get("to_email"),
+                    "thread_id": state.get("gmail_thread_id"),
+                },
+            ))
+        except Exception as exc:
+            logger.debug("store_raw_event: best-effort insert failed: %s", exc)
     return {}
 
 
@@ -233,7 +253,7 @@ def judge_case_node(state: CaseDeskState) -> CaseDeskState:
 
 
 def save_case_judgment(state: CaseDeskState) -> CaseDeskState:
-    """Persist the CaseJudgment snapshot to DB."""
+    """Persist the CaseJudgment snapshot to DB. Idempotent via idempotency_key."""
     from db.models import CaseJudgmentRecord
     from db import repository
     from services.case_judge import CaseJudgment
@@ -242,17 +262,47 @@ def save_case_judgment(state: CaseDeskState) -> CaseDeskState:
     if not judgment_data:
         return {}
 
+    case_id = state.get("reservation_id", "")
+    source_message_id = state.get("gmail_message_id", "")
+    idempotency_key = f"{case_id}:{source_message_id}" if case_id and source_message_id else None
+
+    # Check if this judgment was already saved (retry safety).
+    if idempotency_key:
+        try:
+            existing = (
+                repository._get_client()
+                .table("case_judgments")
+                .select("record_id")
+                .eq("idempotency_key", idempotency_key)
+                .limit(1)
+                .execute()
+            )
+            if existing.data:
+                return {"_judgment_record_id": existing.data[0]["record_id"]}
+        except Exception:
+            pass
+
     try:
         judgment = CaseJudgment.model_validate(judgment_data)
         record = CaseJudgmentRecord(
-            case_id=state.get("reservation_id", ""),
-            source_message_id=state.get("gmail_message_id", ""),
+            case_id=case_id,
+            source_message_id=source_message_id,
             judgment_json=judgment_data,
             confidence=judgment.confidence,
             next_best_action=judgment.next_best_action.tool_name,
             interrupt_level=judgment.interrupt_level,
         )
-        repository.insert_case_judgment(record)
+        # Add idempotency_key to insert payload via direct client call.
+        repository._get_client().table("case_judgments").insert({
+            "record_id": record.record_id,
+            "case_id": record.case_id,
+            "source_message_id": record.source_message_id or None,
+            "judgment_json": record.judgment_json or {},
+            "confidence": record.confidence,
+            "next_best_action": record.next_best_action or None,
+            "interrupt_level": record.interrupt_level,
+            "idempotency_key": idempotency_key,
+        }).execute()
         return {"_judgment_record_id": record.record_id}
     except Exception as exc:
         logger.exception("save_case_judgment failed: %s", exc)
@@ -318,15 +368,34 @@ def update_reservation_cache(state: CaseDeskState) -> CaseDeskState:
     return {}
 
 
+_TOOL_TO_ACTION = {
+    "draft_client_reply": "offer_client_slot",
+    "draft_josh_availability_request": "ask_josh_availability",
+    "draft_josh_booking_request": "confirm_booking_with_josh",
+    "draft_invoice_message": "send_tentative_invoice",
+    "draft_final_confirmation": "send_final_confirmation",
+    "flag_for_staff_review": "escalate",
+}
+
+
 def validate_and_act(state: CaseDeskState) -> CaseDeskState:
-    """Apply safety guards. Fire Telegram approval only if interrupt_level == 'immediate'."""
+    """Apply safety guards. Fire Telegram approval only if interrupt_level == 'immediate'.
+
+    Persists ValidationResultRecord and ExecutionResultRecord for every run.
+    Idempotency check prevents duplicate action_requests on retry.
+    """
     from services.case_judge import CaseJudgment, ToolPlan
     from services.safety_guards import downgrade_to_flag, validate_plan
     from services.tastingroom_service import create_action_request
-    from db.models import Reservation
+    from services.tool_registry import tasting_room_registry
+    from db.models import Reservation, ValidationResultRecord, ExecutionResultRecord
+    from db import repository
 
     judgment_data = state.get("_judgment", {})
     reservation_data = state.get("_reservation", {})
+    reservation_id = state.get("reservation_id", "")
+    source_message_id = state.get("gmail_message_id", "")
+    judgment_record_id = state.get("_judgment_record_id", "")
     reservation = Reservation(**reservation_data) if reservation_data else None
 
     try:
@@ -335,7 +404,7 @@ def validate_and_act(state: CaseDeskState) -> CaseDeskState:
         logger.exception("validate_and_act: could not parse judgment: %s", exc)
         return {
             "final_response": (
-                f"Reservation {state.get('reservation_id')} processed.\n"
+                f"Reservation {reservation_id} processed.\n"
                 "Judgment parse failed — flagged for staff review."
             )
         }
@@ -347,7 +416,30 @@ def validate_and_act(state: CaseDeskState) -> CaseDeskState:
 
     action = judgment.next_best_action.tool_name
 
-    # Build evidence lines for Telegram.
+    # Validate against tool registry — unknown tools get flagged.
+    tool_def = tasting_room_registry.get(f"tasting.{action}") or tasting_room_registry.get(action)
+    if tool_def is None and action not in ("none", "flag_for_staff_review"):
+        reason = f"Tool '{action}' not in tasting_room_registry — flagging for review."
+        judgment = downgrade_to_flag(judgment, reason)
+        allowed = False
+        action = judgment.next_best_action.tool_name
+        logger.warning("validate_and_act: %s", reason)
+
+    # Save validation audit record.
+    val_record = ValidationResultRecord(
+        case_id=reservation_id,
+        tool_name=action,
+        allowed=allowed,
+        source_message_id=source_message_id,
+        judgment_record_id=judgment_record_id,
+        block_reason=reason if not allowed else "",
+        guardrails_triggered=[] if allowed else [reason],
+        approval_required=judgment.next_best_action.requires_human_approval,
+        interrupt_level=judgment.interrupt_level,
+    )
+    repository.insert_validation_result(val_record)
+
+    # Build Telegram-style summary.
     evidence_lines = "\n".join(
         f"  [{e.evidence_type}|{e.confidence:.0%}] {e.source_message_id[:8]}… {e.claim}"
         for e in judgment.evidence[:5]
@@ -358,7 +450,7 @@ def validate_and_act(state: CaseDeskState) -> CaseDeskState:
     )
 
     summary_lines = [
-        f"Case: {state.get('reservation_id')}",
+        f"Case: {reservation_id}",
         f"Summary: {judgment.case_summary}",
         f"Confidence: {judgment.confidence:.0%}  |  interrupt: {judgment.interrupt_level}",
         f"Next action: {action}  ({judgment.next_best_action.reason})",
@@ -372,37 +464,79 @@ def validate_and_act(state: CaseDeskState) -> CaseDeskState:
     if evidence_lines:
         summary_lines.append(f"Evidence:\n{evidence_lines}")
 
-    # Only fire Telegram for immediate interrupts.
+    # Gate: only fire Telegram for immediate interrupts.
     if state.get("disable_actions") or judgment.interrupt_level != "immediate" or action in ("none",):
         summary_lines.append(
             "Telegram: skipped"
             + (" (actions disabled)" if state.get("disable_actions") else f" (level={judgment.interrupt_level})")
         )
-        return {"final_response": "\n".join(summary_lines)}
+        return {
+            "_validation_result_id": val_record.result_id,
+            "final_response": "\n".join(summary_lines),
+        }
 
-    _TOOL_TO_ACTION = {
-        "draft_client_reply": "offer_client_slot",
-        "draft_josh_availability_request": "ask_josh_availability",
-        "draft_josh_booking_request": "confirm_booking_with_josh",
-        "draft_invoice_message": "send_tentative_invoice",
-        "draft_final_confirmation": "send_final_confirmation",
-        "flag_for_staff_review": "escalate",
-    }
     mapped_action = _TOOL_TO_ACTION.get(action, action)
 
+    # Idempotency: skip if action request already exists for this email+action.
     action_id: str | None = None
-    if reservation:
+    idempotency_key = f"{reservation_id}:{source_message_id}:{mapped_action}"
+    try:
+        existing = (
+            repository._get_client()
+            .table("reservation_action_requests")
+            .select("action_id")
+            .eq("idempotency_key", idempotency_key)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            action_id = existing.data[0]["action_id"]
+            logger.info("validate_and_act: idempotent skip, existing action_id=%s", action_id)
+    except Exception:
+        pass
+
+    exec_ok = False
+    exec_error_type = ""
+    exec_error_msg = ""
+
+    if action_id is None and reservation:
         try:
             action_id = create_action_request(
                 reservation,
                 mapped_action,
-                source_message_id=state.get("gmail_message_id", ""),
+                source_message_id=source_message_id,
             )
+            # Backfill idempotency_key on the new row.
+            if action_id:
+                try:
+                    repository._get_client().table("reservation_action_requests").update(
+                        {"idempotency_key": idempotency_key}
+                    ).eq("action_id", action_id).execute()
+                except Exception:
+                    pass
+            exec_ok = bool(action_id)
         except Exception as exc:
             logger.exception("create_action_request failed: %s", exc)
+            exec_error_type = type(exc).__name__
+            exec_error_msg = str(exc)
+    else:
+        exec_ok = bool(action_id)
+
+    # Save execution result.
+    repository.insert_execution_result(ExecutionResultRecord(
+        case_id=reservation_id,
+        tool_name=mapped_action,
+        ok=exec_ok,
+        action_request_id=action_id or "",
+        result_json={"action_id": action_id} if action_id else {},
+        error_type=exec_error_type,
+        error_message=exec_error_msg,
+        created_resource_id=action_id or "",
+    ))
 
     summary_lines.append(f"Approval request: {action_id or 'failed'}")
     return {
+        "_validation_result_id": val_record.result_id,
         "action_id": action_id or "",
         "final_response": "\n".join(summary_lines),
     }

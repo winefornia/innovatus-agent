@@ -8,13 +8,16 @@ from db.models import (
     AvailabilityClaim,
     Case,
     CaseJudgmentRecord,
+    ExecutionResultRecord,
     FailureLabel,
     InvoiceLog,
+    RawEmailEvent,
     Reservation,
     ReservationActionRequest,
     ReservationEvent,
     TraceEvent,
     UnresolvedEvent,
+    ValidationResultRecord,
 )
 
 _client: Optional[Client] = None
@@ -393,6 +396,97 @@ def get_latest_case_judgment(case_id: str) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 # Unresolved events
 # ---------------------------------------------------------------------------
+
+def insert_raw_email_event(event: RawEmailEvent) -> None:
+    """Insert a raw email event. ON CONFLICT (gmail_message_id) DO NOTHING — idempotent."""
+    client = _get_client()
+    try:
+        client.table("raw_email_events").upsert(
+            {
+                "event_id": event.event_id,
+                "gmail_message_id": event.gmail_message_id,
+                "gmail_thread_id": event.gmail_thread_id or None,
+                "subject": event.subject or None,
+                "from_email": event.from_email or None,
+                "to_email": event.to_email or None,
+                "body": event.body or None,
+                "raw_payload": event.raw_payload or {},
+            },
+            on_conflict="gmail_message_id",
+            ignore_duplicates=True,
+        ).execute()
+    except Exception:
+        pass  # best-effort
+
+
+def get_raw_email_event(gmail_message_id: str) -> Optional[dict]:
+    client = _get_client()
+    result = (
+        client.table("raw_email_events")
+        .select("*")
+        .eq("gmail_message_id", gmail_message_id)
+        .limit(1)
+        .execute()
+    )
+    rows = result.data or []
+    return rows[0] if rows else None
+
+
+def list_raw_email_events_for_case(case_id: str) -> list[dict]:
+    """Return raw email events for a case, ordered chronologically.
+
+    Joins via reservation_events.source_message_id to find which gmail_message_ids
+    belong to this case.
+    """
+    client = _get_client()
+    events = list_reservation_events(case_id, limit=100)
+    source_ids = [e["source_message_id"] for e in events if e.get("source_message_id")]
+    if not source_ids:
+        return []
+    raw = []
+    for mid in source_ids:
+        row = get_raw_email_event(mid)
+        if row:
+            raw.append(row)
+    return raw
+
+
+def insert_validation_result(record: ValidationResultRecord) -> None:
+    client = _get_client()
+    try:
+        client.table("validation_results").insert({
+            "result_id": record.result_id,
+            "case_id": record.case_id,
+            "source_message_id": record.source_message_id or None,
+            "judgment_record_id": record.judgment_record_id or None,
+            "tool_name": record.tool_name or None,
+            "allowed": record.allowed,
+            "block_reason": record.block_reason or None,
+            "guardrails_triggered": record.guardrails_triggered or [],
+            "approval_required": record.approval_required,
+            "interrupt_level": record.interrupt_level,
+        }).execute()
+    except Exception:
+        pass  # best-effort
+
+
+def insert_execution_result(record: ExecutionResultRecord) -> None:
+    client = _get_client()
+    try:
+        client.table("execution_results").insert({
+            "result_id": record.result_id,
+            "case_id": record.case_id,
+            "action_request_id": record.action_request_id or None,
+            "tool_name": record.tool_name,
+            "ok": record.ok,
+            "result_json": record.result_json or None,
+            "error_type": record.error_type or None,
+            "error_message": record.error_message or None,
+            "created_resource_id": record.created_resource_id or None,
+        }).execute()
+    except Exception:
+        pass  # best-effort
+
 
 def insert_unresolved_event(event: UnresolvedEvent) -> None:
     client = _get_client()
