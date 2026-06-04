@@ -1,0 +1,18 @@
+{
+  "eval_id": "scenario_001_golden_draft",
+  "case_id": null,
+  "source": "golden",
+  "input": "Invoice Oak Barrel Restaurant for 3 cases Cabernet Sauvignon 2022",
+  "expected_intent": "invoice_creation",
+  "expected_agent": "invoice_agent",
+  "expected_terminal_status": "completed_draft_saved",
+  "should_reach_node": "create_square_invoice_draft",
+  "expected_output_contains": [],
+  "should_not_contain": ["error", "blocked"],
+  "risk_level": "medium",
+  "tags": ["staging", "golden", "invoice"],
+  "notes": "Golden path: approve → keep draft. Verifies Square draft created and status = completed_draft_saved in workflow_records.",
+  "failure_type": null,
+  "failure_description": null,
+  "suggested_patch": null
+}

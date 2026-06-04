@@ -251,6 +251,38 @@ class UnresolvedEvent:
 
 
 @dataclass
+class WorkflowRecord:
+    """Terminal business outcome for one completed workflow run.
+
+    Written by gateway.py after every case closes. The single source of truth
+    for "what did the bot actually do?" — used by the activity page, staging evals,
+    and operator reconciliation.
+
+    Terminal statuses:
+      completed_draft_saved           — Square draft created, kept as draft
+      completed_sent                  — Square invoice published and sent to client
+      completed_reservation_approved  — tasting room booking confirmed
+      completed_reservation_declined  — reservation declined or cancelled
+      cancelled                       — user rejected or bot declined to proceed
+      failed_safely                   — error occurred, no external state changed
+      needs_manual_review             — partial success or reconciliation required
+    """
+    case_id: str
+    bot_type: str                   # "invoice" | "tastingroom"
+    business_object_type: str       # "invoice" | "reservation"
+    business_object_id: str         # square_invoice_id or reservation_id
+    status: str                     # terminal status (see docstring)
+    summary: str                    # one-line human description
+    created_at: str = ""            # ISO timestamp (set by DB default if blank)
+    completed_at: str = ""
+    external_system: str = ""       # "square" | "gmail" | ""
+    external_id: str = ""           # Square invoice_id or Gmail thread_id
+    error_message: str = ""
+    needs_review: bool = False
+    record_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+
+@dataclass
 class EvalCase:
     """A single eval case — can be golden, regression, adversarial, or edge."""
     eval_id: str

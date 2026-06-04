@@ -18,6 +18,7 @@ from db.models import (
     TraceEvent,
     UnresolvedEvent,
     ValidationResultRecord,
+    WorkflowRecord,
 )
 
 _client: Optional[Client] = None
@@ -574,4 +575,39 @@ def list_unlabeled_failures(limit: int = 20) -> list[dict]:
         .limit(limit)
         .execute()
     )
+    return result.data or []
+
+
+# ---------------------------------------------------------------------------
+# Workflow records — terminal business outcome per case
+# ---------------------------------------------------------------------------
+
+def write_workflow_record(record: WorkflowRecord) -> None:
+    """Insert a terminal workflow outcome record. Best-effort — does not raise."""
+    client = _get_client()
+    row: dict = {
+        "record_id":            record.record_id,
+        "case_id":              record.case_id,
+        "bot_type":             record.bot_type,
+        "business_object_type": record.business_object_type,
+        "business_object_id":   record.business_object_id,
+        "status":               record.status,
+        "summary":              record.summary,
+        "external_system":      record.external_system or None,
+        "external_id":          record.external_id or None,
+        "error_message":        record.error_message or None,
+        "needs_review":         record.needs_review,
+    }
+    if record.completed_at:
+        row["completed_at"] = record.completed_at
+    client.table("workflow_records").insert(row).execute()
+
+
+def list_recent_workflow_records(limit: int = 20, bot_type: str = "") -> list[dict]:
+    """List recent workflow records, newest first. Optionally filter by bot_type."""
+    client = _get_client()
+    query = client.table("workflow_records").select("*")
+    if bot_type:
+        query = query.eq("bot_type", bot_type)
+    result = query.order("created_at", desc=True).limit(limit).execute()
     return result.data or []

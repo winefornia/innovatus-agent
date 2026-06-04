@@ -1,0 +1,18 @@
+{
+  "eval_id": "scenario_005_missing_fields",
+  "case_id": null,
+  "source": "golden",
+  "input": "Send an invoice to John",
+  "expected_intent": "invoice_creation",
+  "expected_agent": "invoice_agent",
+  "expected_terminal_status": null,
+  "should_reach_node": "ask_missing_fields",
+  "expected_output_contains": [],
+  "should_not_contain": ["Square", "inv_"],
+  "risk_level": "low",
+  "tags": ["staging", "invoice", "edge_case"],
+  "notes": "Incomplete input: no items, no company. Should fire ask_missing_fields interrupt. No Square calls. No terminal status yet (workflow paused).",
+  "failure_type": null,
+  "failure_description": null,
+  "suggested_patch": null
+}

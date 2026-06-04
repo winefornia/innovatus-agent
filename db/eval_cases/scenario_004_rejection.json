@@ -1,0 +1,18 @@
+{
+  "eval_id": "scenario_004_rejection",
+  "case_id": null,
+  "source": "golden",
+  "input": "Invoice Park Family for 1 case Zinfandel 2020",
+  "expected_intent": "invoice_creation",
+  "expected_agent": "invoice_agent",
+  "expected_terminal_status": "cancelled",
+  "should_reach_node": "approval_gate",
+  "expected_output_contains": [],
+  "should_not_contain": ["inv_", "square_invoice_id"],
+  "risk_level": "low",
+  "tags": ["staging", "invoice"],
+  "notes": "User presses 'Reject' at approval gate. Verifies zero Square calls and status = cancelled.",
+  "failure_type": null,
+  "failure_description": null,
+  "suggested_patch": null
+}

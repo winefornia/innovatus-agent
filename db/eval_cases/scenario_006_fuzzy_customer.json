@@ -1,0 +1,18 @@
+{
+  "eval_id": "scenario_006_fuzzy_customer",
+  "case_id": null,
+  "source": "golden",
+  "input": "Invoice Oak Barrel Rest for 2 cases Pinot 2021",
+  "expected_intent": "invoice_creation",
+  "expected_agent": "invoice_agent",
+  "expected_terminal_status": null,
+  "should_reach_node": "clarify_customer_match",
+  "expected_output_contains": [],
+  "should_not_contain": ["error", "blocked"],
+  "risk_level": "low",
+  "tags": ["staging", "invoice", "edge_case"],
+  "notes": "Slightly misspelled customer name 'Oak Barrel Rest' vs 'Oak Barrel Restaurant'. Should hit fuzzy match and fire clarify_customer_match interrupt. No terminal status yet.",
+  "failure_type": null,
+  "failure_description": null,
+  "suggested_patch": null
+}

@@ -1,0 +1,18 @@
+{
+  "eval_id": "scenario_007_duplicate_approve",
+  "case_id": null,
+  "source": "golden",
+  "input": "Invoice Napa Valley Club for 4 cases Cabernet 2022",
+  "expected_intent": "invoice_creation",
+  "expected_agent": "invoice_agent",
+  "expected_terminal_status": "completed_draft_saved",
+  "should_reach_node": "create_square_invoice_draft",
+  "expected_output_contains": [],
+  "should_not_contain": ["error", "blocked"],
+  "risk_level": "medium",
+  "tags": ["staging", "invoice", "idempotency"],
+  "notes": "Approve → draft. Then simulate second approve callback (same thread_id). Verifies deterministic idempotency key means Square draft NOT created twice. Final status = completed_draft_saved (one draft).",
+  "failure_type": null,
+  "failure_description": null,
+  "suggested_patch": null
+}

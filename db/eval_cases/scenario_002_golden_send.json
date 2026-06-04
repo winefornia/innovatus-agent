@@ -1,0 +1,18 @@
+{
+  "eval_id": "scenario_002_golden_send",
+  "case_id": null,
+  "source": "golden",
+  "input": "Invoice Sofia Valentini for 2 cases Pinot Noir 2021, send immediately",
+  "expected_intent": "invoice_creation",
+  "expected_agent": "invoice_agent",
+  "expected_terminal_status": "completed_sent",
+  "should_reach_node": "publish_invoice",
+  "expected_output_contains": [],
+  "should_not_contain": ["error", "blocked"],
+  "risk_level": "medium",
+  "tags": ["staging", "golden", "invoice"],
+  "notes": "Golden send path: approve → send to client. Verifies publish_invoice called and status = completed_sent.",
+  "failure_type": null,
+  "failure_description": null,
+  "suggested_patch": null
+}

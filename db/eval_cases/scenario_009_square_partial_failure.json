@@ -1,0 +1,18 @@
+{
+  "eval_id": "scenario_009_square_partial_failure",
+  "case_id": null,
+  "source": "regression",
+  "input": "Invoice Hillside Cellars for 3 cases Zinfandel 2022",
+  "expected_intent": "invoice_creation",
+  "expected_agent": "invoice_agent",
+  "expected_terminal_status": "needs_manual_review",
+  "should_reach_node": "create_square_invoice_draft",
+  "expected_output_contains": ["RECONCILIATION"],
+  "should_not_contain": ["blocked"],
+  "risk_level": "high",
+  "tags": ["staging", "invoice", "regression", "reconciliation"],
+  "notes": "Square draft created successfully, but Supabase log write fails (simulate DB connection timeout). Verifies: reconciliation_needed=True in state, 'RECONCILIATION NEEDED' in final_response, status=needs_manual_review in workflow_records.",
+  "failure_type": "partial_success",
+  "failure_description": "Square draft created but Supabase log failed — invoice exists in Square but not in winefornia activity feed",
+  "suggested_patch": "guardrail"
+}

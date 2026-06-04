@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -122,6 +123,25 @@ class Gateway:
             if result.get("square_invoice_id") or (final and not ix):
                 outcome = "success" if result.get("square_invoice_id") else "completed"
                 control.close_case(case, outcome, final)
+                try:
+                    from db.repository import write_workflow_record
+                    from db.models import WorkflowRecord
+                    terminal_status = _derive_terminal_status(result)
+                    write_workflow_record(WorkflowRecord(
+                        case_id=case.case_id,
+                        bot_type="invoice",
+                        business_object_type="invoice",
+                        business_object_id=result.get("square_invoice_id") or "",
+                        status=terminal_status,
+                        summary=final[:200] if final else terminal_status.replace("_", " "),
+                        external_system="square" if result.get("square_invoice_id") else "",
+                        external_id=result.get("square_invoice_id") or "",
+                        error_message=result.get("error") or "",
+                        needs_review=bool(result.get("reconciliation_needed")),
+                        completed_at=datetime.now(timezone.utc).isoformat(),
+                    ))
+                except Exception as _wr_exc:
+                    logging.warning("[gateway] workflow_record write failed: %s", _wr_exc)
 
             return {"thread_id": msg.session_id, **result}
 
@@ -129,6 +149,22 @@ class Gateway:
             logging.error("[gateway] dispatch error: %s", e, exc_info=True)
             control.label_failure(case, "graph_error", "high", "gateway", str(e), "invoice_agent")
             control.close_case(case, "failed", "", str(e))
+            try:
+                from db.repository import write_workflow_record
+                from db.models import WorkflowRecord
+                write_workflow_record(WorkflowRecord(
+                    case_id=case.case_id,
+                    bot_type="invoice",
+                    business_object_type="invoice",
+                    business_object_id="",
+                    status="failed_safely",
+                    summary=str(e)[:200],
+                    error_message=str(e),
+                    needs_review=False,
+                    completed_at=datetime.now(timezone.utc).isoformat(),
+                ))
+            except Exception:
+                pass
             return {
                 "thread_id": msg.session_id,
                 "final_response": f"Something went wrong: {e}",
@@ -141,6 +177,25 @@ class Gateway:
 # ---------------------------------------------------------------------------
 
 gateway = Gateway()
+
+
+# ---------------------------------------------------------------------------
+# Terminal status derivation (pure function — testable without gateway)
+# ---------------------------------------------------------------------------
+
+def _derive_terminal_status(result: dict) -> str:
+    """Map an invoice_graph result dict to one terminal WorkflowRecord status."""
+    if result.get("reconciliation_needed"):
+        return "needs_manual_review"
+    approval = result.get("approval")
+    if approval == "rejected":
+        return "cancelled"
+    if result.get("square_invoice_id"):
+        send = result.get("send_decision", "draft")
+        return "completed_sent" if send == "send" else "completed_draft_saved"
+    if result.get("error"):
+        return "failed_safely"
+    return "needs_manual_review"
 
 
 # ---------------------------------------------------------------------------

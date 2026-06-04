@@ -1,0 +1,18 @@
+{
+  "eval_id": "scenario_003_keep_draft",
+  "case_id": null,
+  "source": "golden",
+  "input": "Bill downtown bistro 6 bottles Chardonnay 2022, keep as draft",
+  "expected_intent": "invoice_creation",
+  "expected_agent": "invoice_agent",
+  "expected_terminal_status": "completed_draft_saved",
+  "should_reach_node": "confirm_send",
+  "expected_output_contains": [],
+  "should_not_contain": ["error", "blocked"],
+  "risk_level": "low",
+  "tags": ["staging", "invoice"],
+  "notes": "Approve then explicitly choose 'draft' at confirm_send. Verifies publish_invoice is NOT called.",
+  "failure_type": null,
+  "failure_description": null,
+  "suggested_patch": null
+}

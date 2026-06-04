@@ -1,0 +1,18 @@
+{
+  "eval_id": "scenario_008_restart_during_interrupt",
+  "case_id": null,
+  "source": "golden",
+  "input": "Invoice Canyon Road Bistro for 6 bottles Rosé 2023",
+  "expected_intent": "invoice_creation",
+  "expected_agent": "invoice_agent",
+  "expected_terminal_status": "completed_draft_saved",
+  "should_reach_node": "approval_gate",
+  "expected_output_contains": [],
+  "should_not_contain": ["error", "blocked"],
+  "risk_level": "medium",
+  "tags": ["staging", "invoice", "persistence"],
+  "notes": "Start invoice, pause at approval_gate interrupt. Restart process (simulate bot restart). Resume with 'approve'. Verifies Postgres checkpointer preserves interrupt state across restarts. Final status = completed_draft_saved.",
+  "failure_type": null,
+  "failure_description": null,
+  "suggested_patch": null
+}
