@@ -1,10 +1,11 @@
 """Gmail service — intake reading + receipt email sending.
 
-Auth: loads token from GMAIL_TOKEN_JSON_B64 env var (Fly.io)
-      or from token.json in the project root (local dev).
-
-Run scripts/google_auth.py once to get the token, then:
-    flyctl secrets set GMAIL_TOKEN_JSON_B64=$(base64 -i token.json)
+Auth (two modes, checked in order):
+  1. Service account + domain-wide delegation (preferred for production):
+     Set GOOGLE_SERVICE_ACCOUNT_JSON_B64 and GOOGLE_DELEGATED_USER_EMAIL.
+  2. OAuth user token (legacy / local dev):
+     Set GMAIL_TOKEN_JSON_B64 or place token.json in project root.
+     Run scripts/google_auth.py once to get the token.
 """
 import base64
 import json
@@ -18,6 +19,7 @@ from typing import Optional
 import anthropic
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
+from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 from app.config import ANTHROPIC_API_KEY
@@ -75,11 +77,31 @@ def _load_token_info() -> dict:
     )
 
 
+def _get_service_account_creds():
+    """Try service account + domain-wide delegation. Returns creds or None."""
+    sa_b64 = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON_B64")
+    delegated_user = os.environ.get("GOOGLE_DELEGATED_USER_EMAIL")
+    if not sa_b64 or not delegated_user:
+        return None
+    sa_info = json.loads(base64.b64decode(sa_b64).decode())
+    creds = service_account.Credentials.from_service_account_info(
+        sa_info, scopes=SCOPES, subject=delegated_user
+    )
+    return creds
+
+
 def _get_service():
     global _service
     if _service:
         return _service
 
+    # Try service account first (production)
+    creds = _get_service_account_creds()
+    if creds:
+        _service = build("gmail", "v1", credentials=creds)
+        return _service
+
+    # Fall back to OAuth user token (legacy / local dev)
     token_info = _load_token_info()
     creds = Credentials.from_authorized_user_info(token_info, SCOPES)
 
