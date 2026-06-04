@@ -160,6 +160,8 @@ uvicorn app.main:app --reload
 | `TELEGRAM_BOT_TOKEN` | yes (bot) | @BotFather on Telegram |
 | `TELEGRAM_TASTINGROOM_BOT_TOKEN` | yes (tasting) | @BotFather on Telegram |
 | `TELEGRAM_APPROVAL_CHAT_ID` | yes (tasting) | Telegram chat ID for approval messages |
+| `TELEGRAM_TASTINGROOM_AUTHORIZED_CHAT_IDS` | optional | comma-separated Telegram chat IDs; defaults to `TELEGRAM_APPROVAL_CHAT_ID` |
+| `TELEGRAM_TASTINGROOM_AUTHORIZED_USER_IDS` | optional | comma-separated Telegram user IDs allowed to use tasting bot |
 | `SUPABASE_URL` | yes | Supabase dashboard → Settings → API |
 | `SUPABASE_SERVICE_KEY` | yes | Supabase dashboard → Settings → API → service_role |
 | `POSTGRES_CONNECTION_STRING` | yes | Supabase dashboard → Settings → Database (port 6543) |
