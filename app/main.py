@@ -16,7 +16,7 @@ import uuid
 from typing import Optional
 
 from fastapi import FastAPI, Request, UploadFile, File, Form
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from services.gateway import gateway, from_api, from_pdf
@@ -228,6 +228,26 @@ def recent_reservations(limit: int = 20):
 async def google_chat_webhook(request: Request):
     event = await request.json()
     return await handle_google_chat_event(event)
+
+
+@app.get("/activity", response_class=HTMLResponse)
+def activity_page(request: Request, limit: int = 20, key: str = ""):
+    """Unified activity history — invoices + tasting room reservations.
+
+    Set ACTIVITY_API_KEY env var to require ?key=VALUE authentication.
+    If ACTIVITY_API_KEY is unset, the page is open (dev mode).
+    """
+    from app.config import ACTIVITY_API_KEY
+    if ACTIVITY_API_KEY and key != ACTIVITY_API_KEY:
+        return HTMLResponse(
+            content="<html><body style='font-family:sans-serif;padding:48px'>"
+                    "<h2>403 — Access denied</h2>"
+                    "<p>Append <code>?key=YOUR_KEY</code> to the URL.</p></body></html>",
+            status_code=403,
+        )
+    limit = min(max(1, limit), 50)
+    from services.activity_service import render_html_activity_page
+    return HTMLResponse(content=render_html_activity_page(limit=limit))
 
 
 @app.get("/health")

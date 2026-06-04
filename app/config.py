@@ -78,6 +78,10 @@ MEM0_API_KEY = os.getenv("MEM0_API_KEY", "")
 
 SHIPPING_WAIVER_THRESHOLD_CENTS = 150_000  # $1,500
 
+# Activity page auth — set ACTIVITY_API_KEY in production to gate /activity.
+# If unset, the page is open (dev-friendly). Pass as ?key=VALUE in the URL.
+ACTIVITY_API_KEY = os.getenv("ACTIVITY_API_KEY", "")
+
 # Production mode — when True, unsafe fallbacks (MemorySaver, etc.) are disabled.
 # Set PRODUCTION_MODE=true in production; leave unset or false for local dev.
 PRODUCTION_MODE = os.getenv("PRODUCTION_MODE", "false").lower() in ("1", "true", "yes", "on")

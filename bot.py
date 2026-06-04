@@ -249,8 +249,23 @@ async def on_message(client: httpx.AsyncClient, message: dict) -> None:
             '• "John Smith, Oak Barrel, 12 Cabernet 2022, 6 Rosé 2021"\n'
             "• Paste a forwarded email order\n"
             "• Send a PDF attachment\n\n"
+            "Commands:\n"
+            "  /history [n] — recent invoice activity\n\n"
             "I'll walk you through the rest step by step."
         )
+        return
+
+    # /history [n] — recent invoice activity
+    if text.strip().startswith("/history"):
+        parts = text.strip().split()
+        limit = 10
+        if len(parts) > 1:
+            try:
+                limit = max(1, min(int(parts[1]), 20))
+            except ValueError:
+                pass
+        from services.activity_service import render_telegram_invoice_history
+        await send(client, chat_id, render_telegram_invoice_history(limit=limit))
         return
 
     # PDF attachment

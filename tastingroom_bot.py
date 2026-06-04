@@ -18,6 +18,7 @@ import logging
 import httpx
 
 from app.config import TELEGRAM_TASTINGROOM_BOT_TOKEN
+from services.telegram_auth import is_authorized_tastingroom_update
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,14 +55,38 @@ async def ack(client: httpx.AsyncClient, cq_id: str) -> None:
 async def on_message(client: httpx.AsyncClient, message: dict) -> None:
     chat_id = message["chat"]["id"]
     text = message.get("text") or ""
+    if not is_authorized_tastingroom_update(message):
+        logging.warning(
+            "[tastingroom auth] blocked message chat=%s user=%s",
+            chat_id,
+            (message.get("from") or {}).get("id"),
+        )
+        await send(client, chat_id, "This tasting room bot is restricted.")
+        return
 
     if text.strip() == "/start":
         await send(client, chat_id,
             "Winefornia Tasting Room Bot\n\n"
             "This bot handles tasting room reservation approvals.\n"
             "Approval requests arrive automatically from the Gmail watcher.\n"
-            "Use the inline buttons to approve, reject, or escalate actions."
+            "Use the inline buttons to approve, reject, or escalate actions.\n\n"
+            "Commands:\n"
+            "  /status — pending reservations\n"
+            "  /history [n] — recent activity"
         )
+        return
+
+    # /history [n] — recent tasting room activity
+    if text.strip().startswith("/history"):
+        parts = text.strip().split()
+        limit = 10
+        if len(parts) > 1:
+            try:
+                limit = max(1, min(int(parts[1]), 20))
+            except ValueError:
+                pass
+        from services.activity_service import render_telegram_reservation_history
+        await send(client, chat_id, render_telegram_reservation_history(limit=limit))
         return
 
     if text.strip() == "/status":
@@ -87,6 +112,18 @@ async def on_callback(client: httpx.AsyncClient, callback_query: dict) -> None:
     chat_id = callback_query["message"]["chat"]["id"]
     data = callback_query.get("data", "")
     await ack(client, cq_id)
+    auth_obj = {
+        "chat": callback_query.get("message", {}).get("chat") or {},
+        "from": callback_query.get("from") or {},
+    }
+    if not is_authorized_tastingroom_update(auth_obj):
+        logging.warning(
+            "[tastingroom auth] blocked callback chat=%s user=%s",
+            chat_id,
+            (callback_query.get("from") or {}).get("id"),
+        )
+        await send(client, chat_id, "This tasting room bot is restricted.")
+        return
 
     if not data.startswith("tr:"):
         await send(client, chat_id, "Unknown action.")
