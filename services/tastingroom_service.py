@@ -1087,49 +1087,72 @@ def _llm_refine_draft(reservation: Reservation, action: str, draft: dict[str, st
         return draft
 
 
+def _guest_line(reservation: Reservation) -> str:
+    n = reservation.guest_count
+    if not n:
+        return ""
+    return f"{n} guest{'s' if n != 1 else ''}"
+
+
+def _slot_line(reservation: Reservation) -> str:
+    parts = []
+    if reservation.requested_date:
+        parts.append(_friendly_date(reservation.requested_date))
+    if reservation.requested_time:
+        parts.append(_friendly_time(reservation.requested_time))
+    return " at ".join(parts) if parts else ""
+
+
+def _header(reservation: Reservation) -> str:
+    name = reservation.client_name or "someone (no name yet)"
+    slot = _slot_line(reservation)
+    guests = _guest_line(reservation)
+    lines = [name]
+    if slot:
+        lines[0] += f" — {slot}"
+    if guests:
+        lines[0] += f", {guests}"
+    if reservation.experience_type:
+        lines.append(reservation.experience_type)
+    return "\n".join(lines)
+
+
 def approval_message(reservation: Reservation, action: str, draft: dict[str, str]) -> str:
-    slot = " ".join(filter(None, [_friendly_date(reservation.requested_date), _friendly_time(reservation.requested_time)]))
+    header = _header(reservation)
+
     if action == "ask_internal_availability":
         return (
-            f"Tasting reservation internal check\n\n"
-            f"Case: {reservation.reservation_id}\n"
-            f"Client: {reservation.client_name or 'Unknown'}"
-            f"{' <' + reservation.client_email + '>' if reservation.client_email else ''}\n"
-            f"Guests: {reservation.guest_count or 'Unknown'}\n"
-            f"Slot: {slot or 'Unknown'}\n"
-            f"Experience: {reservation.experience_type or 'Unknown'}\n"
-            f"State: {reservation.current_state}\n\n"
-            "Does this fit the Innovatus/internal schedule?\n"
-            "This does not send an email. It only records internal availability and waits for the facility reply."
+            f"New tasting request\n\n"
+            f"{header}\n\n"
+            f"The caves are available. Does this work for our schedule?\n"
+            f"(Nothing gets sent — just recording whether we can do it.)"
         )
     if action == "review_payment_status":
         return (
-            f"Tasting reservation payment step\n\n"
-            f"Case: {reservation.reservation_id}\n"
-            f"Client: {reservation.client_name or 'Unknown'}"
-            f"{' <' + reservation.client_email + '>' if reservation.client_email else ''}\n"
-            f"Guests: {reservation.guest_count or 'Unknown'}\n"
-            f"Slot: {slot or 'Unknown'}\n"
-            f"State: {reservation.current_state}\n\n"
-            "The client has accepted the slot and the hold email may have been sent. "
-            "The actual Square invoice/payment link still has to be created/sent or verified.\n\n"
-            "Use:\n"
-            "- Mark Invoice Sent only after Square has actually sent/created the invoice for the client.\n"
-            "- Mark Paid only after Square/payment evidence confirms payment.\n"
-            "- Queue Final Confirmation only after payment is already marked paid."
+            f"Payment check needed\n\n"
+            f"{header}\n\n"
+            f"The client said yes to this slot. Now we need to handle payment.\n\n"
+            f"- \"Invoice Sent\" = you already sent them a Square invoice\n"
+            f"- \"Paid\" = they already paid\n"
+            f"- \"Send Confirmation\" = payment done, send them the final details"
         )
+    if action == "escalate":
+        return (
+            f"Needs your attention\n\n"
+            f"{header}\n\n"
+            f"I couldn't figure out the next step on this one automatically. "
+            f"Can you take a look?"
+        )
+    # Generic action with email draft
+    recipient = draft.get("recipient") or ""
+    subject = draft.get("subject") or ""
+    body = draft.get("body", "")[:1600]
     return (
-        f"Tasting reservation action\n\n"
-        f"Case: {reservation.reservation_id}\n"
-        f"Client: {reservation.client_name or 'Unknown'}"
-        f"{' <' + reservation.client_email + '>' if reservation.client_email else ''}\n"
-        f"Guests: {reservation.guest_count or 'Unknown'}\n"
-        f"Slot: {slot or 'Unknown'}\n"
-        f"State: {reservation.current_state}\n\n"
-        f"Recommended action: {action}\n"
-        f"To: {draft.get('recipient') or 'N/A'}\n"
-        f"Subject: {draft.get('subject')}\n\n"
-        f"Draft:\n{draft.get('body', '')[:1600]}"
+        f"Ready to send an email\n\n"
+        f"{header}\n\n"
+        f"To: {recipient}\n"
+        f"Subject: {subject}\n\n"
+        f"{body}"
         f"{safe_note()}"
     )
 
@@ -1137,33 +1160,33 @@ def approval_message(reservation: Reservation, action: str, draft: dict[str, str
 def safe_note() -> str:
     if not TASTINGROOM_SAFE_MODE:
         return ""
-    target = TASTINGROOM_TEST_RECIPIENT or "NOT SET"
-    return f"\n\nSAFE MODE: outbound Gmail will be rewritten to {target}."
+    target = TASTINGROOM_TEST_RECIPIENT or "(not set)"
+    return f"\n\n(Test mode — emails go to {target} instead of the real recipient.)"
 
 
 def _rows_for_action(action: str, action_id: str) -> list[list[tuple[str, str]]]:
     if action == "escalate":
         return [
-            [("Mark Human Review", f"tr:{action_id}:escalate"),
-             ("Dismiss", f"tr:{action_id}:reject")],
+            [("I'll handle it", f"tr:{action_id}:escalate"),
+             ("Ignore", f"tr:{action_id}:reject")],
         ]
     if action == "ask_internal_availability":
         return [
-            [("Internal Available", f"tr:{action_id}:internal_available"),
-             ("Internal Unavailable", f"tr:{action_id}:internal_unavailable")],
-            [("Suggest Alternatives", f"tr:{action_id}:suggest_alternatives"),
-             ("Escalate", f"tr:{action_id}:escalate")],
+            [("Yes, we can do it", f"tr:{action_id}:internal_available"),
+             ("No, we can't", f"tr:{action_id}:internal_unavailable")],
+            [("Suggest other times", f"tr:{action_id}:suggest_alternatives"),
+             ("I'll handle it", f"tr:{action_id}:escalate")],
         ]
     if action == "review_payment_status":
         return [
-            [("Mark Invoice Sent", f"tr:{action_id}:invoice_sent"),
-             ("Mark Paid", f"tr:{action_id}:paid")],
-            [("Queue Final Confirmation", f"tr:{action_id}:queue_final"),
-             ("Escalate", f"tr:{action_id}:escalate")],
+            [("Invoice sent", f"tr:{action_id}:invoice_sent"),
+             ("Already paid", f"tr:{action_id}:paid")],
+            [("Send confirmation", f"tr:{action_id}:queue_final"),
+             ("I'll handle it", f"tr:{action_id}:escalate")],
         ]
     return [
-        [("Approve Send", f"tr:{action_id}:approve"), ("Reject", f"tr:{action_id}:reject")],
-        [("Escalate", f"tr:{action_id}:escalate")],
+        [("Send it", f"tr:{action_id}:approve"), ("Don't send", f"tr:{action_id}:reject")],
+        [("I'll handle it", f"tr:{action_id}:escalate")],
     ]
 
 

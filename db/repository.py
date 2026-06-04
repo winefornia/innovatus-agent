@@ -227,15 +227,12 @@ def find_recent_reservations(
     return result.data or []
 
 
-def list_recent_reservations(limit: int = 20) -> list[dict]:
+def list_recent_reservations(limit: int = 20, include_smoke: bool = False) -> list[dict]:
     client = _get_client()
-    result = (
-        client.table("reservations")
-        .select("*")
-        .order("updated_at", desc=True)
-        .limit(limit)
-        .execute()
-    )
+    query = client.table("reservations").select("*")
+    if not include_smoke:
+        query = query.not_.like("reservation_id", "TASTING-SMOKE-%")
+    result = query.order("updated_at", desc=True).limit(limit).execute()
     return result.data or []
 
 

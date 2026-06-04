@@ -79,7 +79,24 @@ All channels normalize to `NormalizedMessage` before reaching the invoice graph.
 
 ## Tasting room agent
 
-A separate case-desk workflow (`agents/case_desk_graph.py`) handles reservation emails from `services/tastingroom_mailbox.py`. It stores raw email evidence, extracts claims, resolves the reservation case, asks a judgment layer for the next best action, then creates approval requests for `tastingroom_bot.py`. The older `agents/tastingroom_graph.py` remains for smoke/replay utilities, but Gmail ingestion uses the case-desk path. All reservation state is in Supabase `reservations`, `availability_claims`, and case judgment/audit tables.
+A separate case-desk workflow (`agents/case_desk_graph.py`) handles reservation emails end-to-end:
+
+```
+Gmail inbox
+  ↓  (tastingroom_mail_watcher.py polls every 60s)
+tastingroom_mailbox.py  — candidate filtering, dedup, label management
+  ↓
+case_desk_graph.py  — 9-node LangGraph pipeline:
+  store_raw_event → extract_claims → resolve_case → persist_claims
+  → build_case_bundle → judge_case → save_case_judgment
+  → update_reservation_cache → validate_and_act
+  ↓
+tastingroom_bot.py  — Telegram notifications with inline approve/reject buttons
+  ↓
+Cecil taps a button → process_action_decision() → sends email via Gmail
+```
+
+The judgment layer (Claude Sonnet) reads the full case bundle and returns a structured `CaseJudgment` with next-best-action, confidence, and interrupt level. Actions that need human approval get sent to Telegram immediately. All reservation state lives in Supabase (`reservations`, `availability_claims`, `case_judgments`, `reservation_action_requests`).
 
 ## Repo structure
 
@@ -167,6 +184,8 @@ uvicorn app.main:app --reload
 | `SUPABASE_SERVICE_KEY` | yes | Supabase dashboard → Settings → API → service_role |
 | `POSTGRES_CONNECTION_STRING` | yes | Supabase dashboard → Settings → Database (port 6543) |
 | `GMAIL_TOKEN_JSON_B64` | yes (gmail) | `base64 -i token.json` after running `scripts/google_auth.py` |
+| `GOOGLE_SERVICE_ACCOUNT_JSON_B64` | preferred (gmail) | Google Cloud service account JSON with domain-wide delegation enabled |
+| `GOOGLE_DELEGATED_USER_EMAIL` | preferred (gmail) | Workspace mailbox to impersonate, e.g. `lisa@winefornia.com` |
 | `MEM0_API_KEY` | optional | app.mem0.ai → API Keys |
 | `TASTINGROOM_SAFE_MODE` | optional | `true` = send emails to test address only (default: true) |
 | `TASTINGROOM_TEST_RECIPIENT` | optional | email to receive test messages in safe mode |
@@ -185,6 +204,36 @@ GET  /invoices/recent             — last N invoice logs from Supabase
 GET  /reservations/recent         — last N tasting room reservations
 GET  /health
 ```
+
+## Gmail auth stability
+
+Preferred production auth is Google Workspace domain-wide delegation. This avoids
+per-user OAuth refresh tokens for the server process.
+
+1. In Google Cloud, create a service account for this app and enable domain-wide delegation.
+2. Copy the service account OAuth client ID from its advanced settings.
+3. In Google Admin Console, as a super admin, go to Security → Access and data control → API controls → Manage Domain Wide Delegation.
+4. Add the service account client ID with these scopes:
+
+```
+https://mail.google.com/
+https://www.googleapis.com/auth/calendar
+https://www.googleapis.com/auth/contacts.readonly
+https://www.googleapis.com/auth/chat.spaces.readonly
+https://www.googleapis.com/auth/chat.messages.readonly
+```
+
+5. Deploy the service account key and delegated mailbox:
+
+```bash
+flyctl secrets set \
+  GOOGLE_SERVICE_ACCOUNT_JSON_B64="$(base64 -i service-account.json)" \
+  GOOGLE_DELEGATED_USER_EMAIL="lisa@winefornia.com"
+```
+
+The app still supports `GMAIL_TOKEN_JSON_B64` and account-specific
+`GOOGLE_TOKEN_JSON_B64_*` as fallback auth, but service-account delegation is the
+stable production path.
 
 ## Pricing tiers
 
@@ -210,4 +259,13 @@ Every agent run opens a `Case` in Supabase `agent_cases`. All LLM calls, tool ca
 fly deploy
 ```
 
-Three processes run on the same machine: `web` (FastAPI), `bot` (Telegram invoice), `tastingroom_bot` (Telegram tasting room). Secrets are set via `fly secrets set KEY=value`.
+Four processes run on Fly.io:
+
+| Process | Command | Purpose |
+|---|---|---|
+| `web` | `uvicorn app.main:app` | FastAPI server (HTTP endpoints, activity page) |
+| `bot` | `python bot.py` | Telegram invoice bot (long polling) |
+| `tastingroom_bot` | `python tastingroom_bot.py` | Telegram tasting room bot (approval callbacks) |
+| `tastingroom_watcher` | `python scripts/tastingroom_mail_watcher.py` | Gmail poller for tasting room emails |
+
+Secrets are set via `fly secrets set KEY=value`. The `tastingroom_bot` requires `TELEGRAM_TASTINGROOM_BOT_TOKEN` (separate from the invoice bot token). All timestamps in the system are stored as UTC in Supabase and converted to Pacific time for display.

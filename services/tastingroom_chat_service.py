@@ -23,7 +23,7 @@ def handle_tastingroom_chat(text: str, *, chat_id: int | str) -> str:
     if intent in {"status", "show_case"}:
         reservation = _find_reservation(command)
         if not reservation:
-            return "I could not find a matching tasting room case."
+            return "Couldn't find that reservation."
         return _format_case(reservation)
     if intent in {"mark_invoice_sent", "mark_paid", "queue_final", "approve_action", "reject_action", "escalate_action"}:
         return _apply_action_decision(command, decided_by=f"tg_{chat_id}")
@@ -122,13 +122,19 @@ def _list_pending(limit: int = 8) -> str:
         or []
     )
     if not actions:
-        return "No pending tasting room actions."
-    lines = ["Pending tasting room actions:"]
+        return "Nothing pending — all caught up!"
+    lines = [f"{len(actions)} thing{'s' if len(actions) != 1 else ''} waiting on you:\n"]
     for action in actions:
-        lines.append(
-            f"- {action.get('action_type')} | {action.get('reservation_id')} | "
-            f"{action.get('recipient_email') or 'internal'} | action {action.get('action_id')}"
-        )
+        action_type = (action.get("action_type") or "").replace("_", " ")
+        rid = action.get("reservation_id", "")
+        # Extract a human-readable name from reservation_id like TASTING-20260607-2G-AUDREY
+        parts = rid.split("-")
+        name = " ".join(parts[3:]).title() if len(parts) > 3 else ""
+        date_part = parts[1] if len(parts) > 1 else ""
+        if name:
+            lines.append(f"• {name} — {action_type}")
+        else:
+            lines.append(f"• {date_part or rid} — {action_type}")
     return "\n".join(lines)
 
 
@@ -165,16 +171,50 @@ def _find_reservation(command: dict[str, Any]) -> dict | None:
 
 
 def _format_case(row: dict) -> str:
-    return (
-        f"Case: {row.get('reservation_id')}\n"
-        f"Client: {row.get('client_name') or 'Unknown'} <{row.get('client_email') or 'no email'}>\n"
-        f"Guests: {row.get('guest_count') or 'Unknown'}\n"
-        f"Slot: {row.get('requested_date') or 'no date'} {row.get('requested_time') or ''}\n"
-        f"State: {row.get('current_state')}\n"
-        f"Payment: {row.get('payment_status')}\n"
-        f"Booking: {row.get('booking_status')}\n"
-        f"Next: {row.get('recommended_action') or 'none'}"
-    )
+    from services.activity_service import _STATE_LABELS
+
+    name = row.get("client_name") or "Unknown"
+    email = row.get("client_email")
+    guests = row.get("guest_count")
+    date_str = row.get("requested_date") or ""
+    time_str = row.get("requested_time") or ""
+    experience = row.get("experience_type") or ""
+    state = row.get("current_state") or ""
+    payment = row.get("payment_status") or ""
+    booking = row.get("booking_status") or ""
+
+    # Build human-readable slot
+    slot_parts = []
+    if date_str:
+        try:
+            from datetime import datetime
+            slot_parts.append(datetime.fromisoformat(date_str[:10]).strftime("%A, %B %-d"))
+        except Exception:
+            slot_parts.append(date_str)
+    if time_str:
+        try:
+            from datetime import datetime
+            slot_parts.append(datetime.strptime(time_str[:5], "%H:%M").strftime("%-I:%M %p").lower())
+        except Exception:
+            slot_parts.append(time_str)
+
+    status_label = _STATE_LABELS.get(state, (state.replace("_", " ").lower(), ""))[0]
+
+    lines = [name]
+    if email:
+        lines[0] += f" ({email})"
+    if slot_parts:
+        lines.append(" at ".join(slot_parts))
+    if guests:
+        lines.append(f"{guests} guest{'s' if guests != 1 else ''}")
+    if experience:
+        lines.append(experience)
+    lines.append(f"\nStatus: {status_label}")
+    if payment and payment != "not_sent":
+        lines.append(f"Payment: {payment.replace('_', ' ')}")
+    if booking and booking != "not_booked":
+        lines.append(f"Booking: {booking.replace('_', ' ')}")
+    return "\n".join(lines)
 
 
 def _apply_action_decision(command: dict[str, Any], *, decided_by: str) -> str:
@@ -184,13 +224,13 @@ def _apply_action_decision(command: dict[str, Any], *, decided_by: str) -> str:
     if not action_id:
         reservation = _find_reservation(command)
         if not reservation:
-            return "I could not find the reservation to apply that action."
+            return "Couldn't find that reservation."
         action = _latest_pending_action(
             reservation["reservation_id"],
             preferred_type="review_payment_status" if command["intent"] in {"mark_invoice_sent", "mark_paid", "queue_final"} else None,
         )
         if not action:
-            return f"No pending action found for {reservation['reservation_id']}."
+            return "Nothing pending for that reservation right now."
         action_id = action["action_id"]
 
     decision = {
@@ -203,10 +243,18 @@ def _apply_action_decision(command: dict[str, Any], *, decided_by: str) -> str:
     }[command["intent"]]
     result = process_action_decision(action_id, decision, decided_by=decided_by)
     if not result.get("ok"):
-        return f"Action failed: {result.get('error')}"
-    response = f"Action {result.get('status')}.\nReservation: {result.get('reservation_id')}"
+        return f"That didn't work — {result.get('error')}"
+    status = result.get("status", "")
+    if status == "rejected":
+        response = "Skipped."
+    elif status == "escalated":
+        response = "Marked for you to handle manually."
+    elif status in ("sent", "completed"):
+        response = "Done!"
+    else:
+        response = f"Updated — {status}."
     if result.get("next_action_id"):
-        response += f"\nNext action queued: {result['next_action_id']}"
+        response += "\nNext step is queued — I'll message you when it's ready."
     return response
 
 
@@ -215,12 +263,12 @@ def _revise_pending_email(command: dict[str, Any], raw_text: str) -> str:
 
     reservation = _find_reservation(command)
     if not reservation:
-        return "I could not find the reservation whose draft should be revised."
+        return "Couldn't find that reservation to edit the draft."
     action = _latest_pending_action(reservation["reservation_id"])
     if not action:
         return f"No pending action draft found for {reservation['reservation_id']}."
     if not action.get("recipient_email"):
-        return "The latest pending action is internal-only, so there is no client/facility email draft to revise."
+        return "That one doesn't have an email draft to edit — it's an internal step."
 
     revised = _revise_email_with_llm(action, reservation, raw_text)
     update_reservation_action(
@@ -228,16 +276,15 @@ def _revise_pending_email(command: dict[str, Any], raw_text: str) -> str:
         email_subject=revised["subject"],
         email_body=revised["body"],
         recommendation=(
-            f"Edited tasting room action\n\nCase: {reservation['reservation_id']}\n"
-            f"Client: {reservation.get('client_name')} <{reservation.get('client_email')}>\n"
-            f"Recommended action: {action.get('action_type')}\n"
+            f"Revised email for {reservation.get('client_name') or 'reservation'}\n\n"
             f"To: {action.get('recipient_email')}\n"
-            f"Subject: {revised['subject']}\n\nDraft:\n{revised['body'][:1600]}"
+            f"Subject: {revised['subject']}\n\n"
+            f"{revised['body'][:1600]}"
         ),
     )
+    name = reservation.get("client_name") or "the reservation"
     return (
-        f"Updated pending draft for {reservation['reservation_id']}.\n"
-        f"Action: {action['action_id']}\n"
+        f"Updated the draft for {name}.\n\n"
         f"Subject: {revised['subject']}\n\n"
         f"{revised['body'][:1200]}"
     )
@@ -310,13 +357,11 @@ def _parse_json_text(content: Any) -> dict[str, Any]:
 
 def _help_text() -> str:
     return (
-        "Tasting room commands:\n"
-        "- status / pending\n"
-        "- show Haein\n"
-        "- mark Haein invoice sent\n"
-        "- mark Haein paid\n"
-        "- queue final confirmation for Haein\n"
-        "- approve <action_id>\n"
-        "- reject <action_id>\n"
-        "- revise Haein email to be warmer and shorter"
+        "You can type things like:\n\n"
+        "\"pending\" — see what's waiting\n"
+        "\"show Audrey\" — look up a reservation\n"
+        "\"mark Audrey paid\" — record a payment\n"
+        "\"mark Audrey invoice sent\" — after you send the Square invoice\n"
+        "\"send confirmation for Audrey\" — send final details\n"
+        "\"revise the email to sound warmer\" — edit a draft before sending"
     )

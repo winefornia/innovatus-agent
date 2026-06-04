@@ -13,8 +13,11 @@ Data from existing repository functions — no new queries needed.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from html import escape
+from zoneinfo import ZoneInfo
+
+_PACIFIC = ZoneInfo("America/Los_Angeles")
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +64,7 @@ _STATUS_EMOJI = {
 # ---------------------------------------------------------------------------
 
 def _fmt_ts(ts_str: str | None) -> str:
-    """ISO timestamp → 'Jun 3, 2:14 pm'. Returns '' if None/unparseable."""
+    """ISO timestamp (UTC from Supabase) → 'Jun 3, 2:14 pm' in Pacific."""
     if not ts_str:
         return ""
     try:
@@ -69,6 +72,10 @@ def _fmt_ts(ts_str: str | None) -> str:
         if s.endswith("Z"):
             s = s[:-1] + "+00:00"
         dt = datetime.fromisoformat(s)
+        # Assume UTC if no timezone info (Supabase default)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.astimezone(_PACIFIC)
         return dt.strftime("%-d %b, %-I:%M %p").replace("AM", "am").replace("PM", "pm")
     except Exception:
         return ts_str[:16]
@@ -132,7 +139,7 @@ def _fmt_reservation(row: dict) -> dict:
     guest_str = f"{guests} guest{'s' if guests != 1 else ''}" if guests else ""
     exp = (row.get("experience_type") or "").replace("_", " ").title()
 
-    ts = row.get("updated_at") or row.get("created_at") or ""
+    ts = row.get("created_at") or row.get("updated_at") or ""
     return {
         "type":          "reservation",
         "name":          row.get("client_name") or "Unknown client",

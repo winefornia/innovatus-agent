@@ -61,18 +61,16 @@ async def on_message(client: httpx.AsyncClient, message: dict) -> None:
             chat_id,
             (message.get("from") or {}).get("id"),
         )
-        await send(client, chat_id, "This tasting room bot is restricted.")
+        await send(client, chat_id, "Sorry, this bot is only for the Winefornia team.")
         return
 
     if text.strip() == "/start":
         await send(client, chat_id,
-            "Winefornia Tasting Room Bot\n\n"
-            "This bot handles tasting room reservation approvals.\n"
-            "Approval requests arrive automatically from the Gmail watcher.\n"
-            "Use the inline buttons to approve, reject, or escalate actions.\n\n"
-            "Commands:\n"
-            "  /status — pending reservations\n"
-            "  /history [n] — recent activity"
+            "Hey! I'm watching the tasting room inbox.\n\n"
+            "When someone requests a visit, I'll message you here to confirm.\n"
+            "Just tap the buttons to approve or I'll flag anything I'm not sure about.\n\n"
+            "/status — what's pending right now\n"
+            "/history — recent reservations"
         )
         return
 
@@ -104,7 +102,7 @@ async def on_message(client: httpx.AsyncClient, message: dict) -> None:
         await send(client, chat_id, handle_tastingroom_chat(text, chat_id=chat_id))
     except Exception as e:
         logging.error("[tastingroom message] error: %s", e, exc_info=True)
-        await send(client, chat_id, f"Tasting room command failed: {e}")
+        await send(client, chat_id, f"Something went wrong — try again? ({e})")
 
 
 async def on_callback(client: httpx.AsyncClient, callback_query: dict) -> None:
@@ -122,16 +120,13 @@ async def on_callback(client: httpx.AsyncClient, callback_query: dict) -> None:
             chat_id,
             (callback_query.get("from") or {}).get("id"),
         )
-        await send(client, chat_id, "This tasting room bot is restricted.")
         return
 
     if not data.startswith("tr:"):
-        await send(client, chat_id, "Unknown action.")
         return
 
     parts = data.split(":", 2)
     if len(parts) != 3:
-        await send(client, chat_id, "Invalid tasting room action.")
         return
 
     _, action_id, decision = parts
@@ -140,12 +135,19 @@ async def on_callback(client: httpx.AsyncClient, callback_query: dict) -> None:
 
         result = process_action_decision(action_id, decision, decided_by=f"tg_{chat_id}")
         if result.get("ok"):
-            await send(client, chat_id,
-                f"Tasting room action {result.get('status')}.\n"
-                f"Reservation: {result.get('reservation_id')}"
-            )
+            status = result.get("status", "")
+            rid = result.get("reservation_id", "")
+            if status == "rejected":
+                reply = f"Got it — skipped. ({rid})"
+            elif status == "escalated":
+                reply = f"Marked for you to handle manually. ({rid})"
+            elif status in ("sent", "completed"):
+                reply = f"Done! ({rid})"
+            else:
+                reply = f"Updated — {status}. ({rid})"
+            await send(client, chat_id, reply)
         else:
-            await send(client, chat_id, f"Tasting room action failed: {result.get('error')}")
+            await send(client, chat_id, f"Hmm, that didn't work: {result.get('error')}")
     except Exception as e:
         logging.error("[tastingroom callback] error: %s", e, exc_info=True)
         await send(client, chat_id, f"Tasting room action failed: {e}")

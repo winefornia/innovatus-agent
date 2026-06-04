@@ -464,8 +464,14 @@ def validate_and_act(state: CaseDeskState) -> CaseDeskState:
     if evidence_lines:
         summary_lines.append(f"Evidence:\n{evidence_lines}")
 
-    # Gate: only fire Telegram for immediate interrupts.
-    if state.get("disable_actions") or judgment.interrupt_level != "immediate" or action in ("none",):
+    # Gate: fire Telegram for "immediate" and "digest" (everything with an action).
+    # Only skip for "none" (purely informational, no action needed).
+    skip_telegram = (
+        state.get("disable_actions")
+        or judgment.interrupt_level == "none"
+        or action in ("none",)
+    )
+    if skip_telegram:
         summary_lines.append(
             "Telegram: skipped"
             + (" (actions disabled)" if state.get("disable_actions") else f" (level={judgment.interrupt_level})")

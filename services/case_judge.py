@@ -127,7 +127,7 @@ def _fallback_judgment(reason: str) -> CaseJudgment:
             requires_human_approval=True,
         ),
         evidence=[],
-        interrupt_level="none",
+        interrupt_level="immediate",
     )
 
 
@@ -150,13 +150,17 @@ probably refers to this booking but does not name the client directly).
   Blockers prevent action. Uncertainties are things you cannot confirm from the evidence \
   and that a human should verify.
 - Set interrupt_level:
-    - "immediate" — an irreversible or reputation-sensitive action is warranted right now \
-      (e.g. payment received and final confirmation is unsent, client accepted and invoice \
-      needs sending).
-    - "digest" — case advanced but no urgent action (e.g. new inquiry arrived, Josh replied \
-      with availability — can wait for next batch review).
-    - "none" — purely informational, no action needed.
-- If confidence < 0.6, use "flag_for_staff_review" and "none" interrupt_level.
+    - "immediate" — an action needs human approval now. Use this when next_best_action \
+      is anything other than "none" (e.g. client needs a reply, Josh needs to be asked, \
+      payment received, final confirmation ready, or staff review needed).
+    - "digest" — the case moved forward but no action is needed right now \
+      (e.g. we sent something and are waiting for a reply, re-processing an email \
+      we already handled but state didn't change).
+    - "none" — nothing changed. Duplicate email, already-processed message, or purely \
+      informational with no action.
+- If next_best_action is NOT "none", interrupt_level should almost always be "immediate".
+- If confidence < 0.6, use "flag_for_staff_review" with "immediate" interrupt_level \
+  so a human is notified.
 - "none" action is valid and preferred over acting on insufficient evidence.
 """
 
