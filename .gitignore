@@ -15,6 +15,10 @@ build/
 token.json
 token-*.json
 
+# Google service account keys — deploy via Fly secrets, never commit
+*-service-account*.json
+agent-*.json
+
 # Customer PII — loaded at runtime from Supabase; use app/data/*.example.json as templates
 app/data/customers.json
 app/data/approval_log.json
