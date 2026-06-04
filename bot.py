@@ -17,8 +17,9 @@ import logging
 import httpx
 from langgraph.types import Command
 
-from agents.invoice_graph import invoice_graph, DEFAULT_INVOICE_MESSAGE
+from agents.invoice_graph import invoice_graph
 from services.control_layer import control
+from services.invoice_interrupts import current_invoice_interrupt as which
 
 
 def _close_case_if_done(result: dict, ix_after: str | None) -> None:
@@ -87,35 +88,6 @@ async def send_kb(
 
 async def ack(client: httpx.AsyncClient, cq_id: str) -> None:
     await tg(client, "answerCallbackQuery", callback_query_id=cq_id)
-
-
-# ── State → interrupt type ──────────────────────────────────────────────────
-
-def which(state: dict | None) -> str | None:
-    if not state:
-        return None
-    if state.get("missing_fields"):
-        return "missing"
-    if state.get("customer") and state.get("customer_confirmed") is False:
-        return "confirm_customer"
-    if state.get("customer") and not state.get("tier_name"):
-        return "tier"
-    # Paused at interpret_edit — approval set to "edit_requested", waiting for edit text
-    if state.get("approval") == "edit_requested" and state.get("invoice_preview"):
-        return "edit_instruction"
-    # Paused at apply_patch — waiting to confirm a low-confidence field change
-    if (state.get("edit_instruction") and not state.get("approval")
-            and state.get("invoice_preview") and not state.get("square_invoice_id")):
-        changes = (state.get("edit_patch") or {}).get("field_changes", [])
-        if any(c.get("confidence", 1.0) < 0.80 for c in changes):
-            return "edit_clarification"
-    if state.get("invoice_preview") and not state.get("approval") and not state.get("square_invoice_id"):
-        return "approval"
-    if state.get("square_invoice_id") and not state.get("send_decision"):
-        return "send"
-    if state.get("send_decision") == "send" and not state.get("email_receipt_decision"):
-        return "email"
-    return None
 
 
 # ── State renderer ──────────────────────────────────────────────────────────

@@ -45,9 +45,11 @@ GMAIL_TASTING_ROOT_LABEL = os.getenv("GMAIL_TASTING_ROOT_LABEL", "Tasting Room")
 GMAIL_TASTING_PROCESSED_LABEL = os.getenv("GMAIL_TASTING_PROCESSED_LABEL", "Tasting Room/Processed")
 GMAIL_TASTING_QUERY = os.getenv(
     "GMAIL_TASTING_QUERY",
-    'newer:2026/05/01 (from:josh@thecavesatsodacanyon.com OR '
+    '(from:josh@thecavesatsodacanyon.com OR '
     'from:invoicing@messaging.squareup.com OR '
-    'from:form-submission@squarespace.info OR subject:"Form Submission - Wine tasting Booking" OR '
+    'from:form-submission@squarespace.info OR '
+    'from:innovatuswine.com OR '
+    'subject:"Form Submission - Wine tasting Booking" OR '
     'subject:"Availability Check" OR subject:"new invoice was created" OR subject:"invoice was paid")',
 )
 GMAIL_TASTING_POLL_SECONDS = int(os.getenv("GMAIL_TASTING_POLL_SECONDS", "60"))

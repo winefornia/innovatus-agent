@@ -69,7 +69,7 @@ Max 2 edit rounds per invoice. After that Cecil must resubmit the full order.
 | Channel | Entry point | Thread ID scheme |
 |---|---|---|
 | Telegram | `bot.py` (long polling) | `tg_{chat_id}` |
-| Google Chat | `app/adapters/google_chat_adapter.py` | `gc_{space_id}` |
+| Google Chat | `app/adapters/google_chat_adapter.py` → `services/gateway.py` | `gc_{space_id}` |
 | Email / Mailgun / SendGrid | `POST /webhooks/email` | `email_{uuid}` |
 | Gmail labeled "To Invoice" | `POST /webhooks/gmail/poll` | `gmail_{message_id}` |
 | HTTP API / Zapier / n8n | `POST /intake` | caller-supplied or auto-generated |
@@ -79,7 +79,7 @@ All channels normalize to `NormalizedMessage` before reaching the invoice graph.
 
 ## Tasting room agent
 
-A separate agent (`agents/tastingroom_graph.py`) handles reservation emails from `tastingroom_bot.py`. It polls Gmail for tasting room inquiries, proposes availability slots, and manages the back-and-forth with the venue contact (Josh). All reservation state is in Supabase `reservations` / `availability_claims` tables.
+A separate case-desk workflow (`agents/case_desk_graph.py`) handles reservation emails from `services/tastingroom_mailbox.py`. It stores raw email evidence, extracts claims, resolves the reservation case, asks a judgment layer for the next best action, then creates approval requests for `tastingroom_bot.py`. The older `agents/tastingroom_graph.py` remains for smoke/replay utilities, but Gmail ingestion uses the case-desk path. All reservation state is in Supabase `reservations`, `availability_claims`, and case judgment/audit tables.
 
 ## Repo structure
 
@@ -96,7 +96,8 @@ winefornia-agent/
       pricing_tiers.json      # tier multipliers
   agents/
     invoice_graph.py          # LangGraph invoice workflow  ← main file
-    tastingroom_graph.py      # tasting room reservation workflow
+    case_desk_graph.py        # current Gmail tasting room reservation workflow
+    tastingroom_graph.py      # legacy/smoke-test tasting room workflow
     supervisor_graph.py       # intent routing types
   services/
     gateway.py              # channel normalization (NormalizedMessage)
@@ -112,7 +113,7 @@ winefornia-agent/
     pdf_service.py          # PDF → text extraction
     patch_service.py        # LLM auto-propose + apply fixes for low-severity failures
     tastingroom_service.py  # tasting room reservation logic
-    tastingroom_mailbox.py  # Gmail poll for tasting room emails
+    tastingroom_mailbox.py  # Gmail poll for tasting room emails → case_desk_graph
   db/
     schema.sql              # all tables: invoice_logs, reservations, agent_cases,
                             #   trace_events, failure_labels, availability_claims, etc.

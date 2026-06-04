@@ -18,6 +18,8 @@ import logging
 import httpx
 from langgraph.types import Command
 from agents.invoice_graph import invoice_graph
+from services.gateway import NormalizedMessage, gateway
+from services.invoice_interrupts import current_invoice_interrupt as which
 
 log = logging.getLogger(__name__)
 
@@ -48,26 +50,6 @@ _RESUME: dict[str, str] = {
     "gc_email_send":  "send",
     "gc_email_skip":  "skip",
 }
-
-
-# ── State → interrupt type (copied verbatim from bot.py) ────────────────────
-
-def which(state: dict | None) -> str | None:
-    if not state:
-        return None
-    if state.get("missing_fields"):
-        return "missing"
-    if state.get("customer") and state.get("customer_confirmed") is False:
-        return "confirm_customer"
-    if state.get("customer") and not state.get("tier_name"):
-        return "tier"
-    if state.get("invoice_preview") and not state.get("approval") and not state.get("square_invoice_id"):
-        return "approval"
-    if state.get("square_invoice_id") and not state.get("send_decision"):
-        return "send"
-    if state.get("send_decision") == "send" and not state.get("email_receipt_decision"):
-        return "email"
-    return None
 
 
 # ── Google Chat response builders ───────────────────────────────────────────
@@ -376,22 +358,31 @@ async def _handle_message(event: dict, space_id: str, thread_id: str, config: di
     if not text:
         return {"text": ""}
 
-    # If there's a pending missing_fields interrupt, resume it
+    # If there's a pending text-input interrupt, resume it
     try:
         snapshot = invoice_graph.get_state(config)
-        if snapshot and snapshot.next and which(snapshot.values) == "missing":
-            log.info("[gc:message] resuming missing interrupt space=%s", space_id)
+        ix = which(snapshot.values) if snapshot and snapshot.next else None
+        if ix in ("missing", "edit_instruction", "edit_clarification"):
+            log.info("[gc:message] resuming %s interrupt space=%s", ix, space_id)
             result = invoice_graph.invoke(Command(resume=text), config=config)
             return render(result, space_id)
     except Exception:
         pass
 
-    # Start fresh
+    # Start fresh through the gateway so guardrails, control-layer traces, and
+    # workflow records match the Telegram/API paths.
     log.info("[gc:message] new run space=%s text=%r", space_id, text[:80])
     try:
-        result = invoice_graph.invoke(
-            {"raw_message": text, "sender_id": sender_id},
-            config=config,
+        result = gateway.dispatch(
+            NormalizedMessage(
+                user_id=f"gc_{sender_id}",
+                channel="google_chat",
+                session_id=thread_id,
+                text=text,
+                raw={"space_id": space_id, "sender_id": sender_id},
+                attachments=[],
+                sender_id=sender_id,
+            )
         )
         ix = which(result)
         log.info("[gc:run] which=%r intent=%r customer_confirmed=%r tier=%r",
@@ -440,10 +431,14 @@ async def _handle_card_clicked(event: dict, space_id: str, thread_id: str, confi
             log.error("[gc:wizard] error: %s", e, exc_info=True)
             return _text(f"Error applying tier: {e}", is_card_click=True)
 
-    # ── Edit — ask for correction ────────────────────────────────────────
+    # ── Edit — resume graph into the edit-instruction checkpoint ─────────
     if action_name == "gc_edit":
-        return _text("What needs to change? Describe the correction and I'll re-process from scratch.",
-                      is_card_click=True)
+        try:
+            result = invoice_graph.invoke(Command(resume="edit"), config=config)
+            return render(result, space_id, is_card_click=True)
+        except Exception as e:
+            log.error("[gc:edit] error: %s", e, exc_info=True)
+            return _text(f"Error starting edit: {e}", is_card_click=True)
 
     # ── All other card actions → stale-click guard then resume graph ───────
     if action_name in _VALID_AT:

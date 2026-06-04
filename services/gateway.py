@@ -118,8 +118,8 @@ class Gateway:
                     result = {**result, "final_response": final}
 
             # Close case if done
-            from bot import which
-            ix = which(result)
+            from services.invoice_interrupts import current_invoice_interrupt
+            ix = current_invoice_interrupt(result)
             if result.get("square_invoice_id") or (final and not ix):
                 outcome = "success" if result.get("square_invoice_id") else "completed"
                 control.close_case(case, outcome, final)

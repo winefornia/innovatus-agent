@@ -91,6 +91,7 @@ def _looks_like_tastingroom_message(msg: dict[str, Any]) -> bool:
         "tasting request",
         "tasting availability",
         "innovatus tasting",
+        "innovatuswine.com",
         "reservation",
     )
     return any(needle in haystack for needle in needles)
@@ -174,7 +175,8 @@ def process_gmail_message(message_id: str, *, labels: list[str] | None = None) -
     )
 
     message_type = result.get("message_type")
-    current_state = result.get("current_state")
+    reservation = result.get("_reservation") or {}
+    current_state = result.get("current_state") or reservation.get("current_state")
     applied_labels = labels_for_result(message_type, current_state)
     apply_message_labels(
         message_id,

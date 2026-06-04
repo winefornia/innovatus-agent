@@ -19,7 +19,7 @@ from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from services.gateway import gateway, from_api, from_pdf
+from services.gateway import NormalizedMessage, gateway, from_api, from_pdf
 from services.pdf_service import extract_invoice_fields_from_pdf
 from app.adapters.google_chat_adapter import handle_google_chat_event
 
@@ -131,18 +131,19 @@ async def email_webhook(request: Request):
         return {"ok": True, "skipped": "empty message"}
 
     thread_id = f"email_{uuid.uuid4().hex[:8]}"
-    config = {"configurable": {"thread_id": thread_id}}
-    try:
-        result = invoice_graph.invoke(
-            {"raw_message": message, "sender_id": sender},
-            config=config,
-        )
-        return {"ok": True, "thread_id": thread_id, "response": result.get("final_response")}
-    except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={"ok": False, "thread_id": thread_id, "error": str(e)},
-        )
+    msg = NormalizedMessage(
+        user_id=f"email_{sender}",
+        channel="email",
+        session_id=thread_id,
+        text=message,
+        raw={"sender": sender, "subject": subject},
+        attachments=[],
+        sender_id=sender,
+    )
+    result = gateway.dispatch(msg)
+    if result.get("error") and not result.get("final_response"):
+        return JSONResponse(status_code=500, content={"ok": False, **result})
+    return {"ok": True, "thread_id": thread_id, "response": result.get("final_response"), **result}
 
 
 # ---------------------------------------------------------------------------
@@ -173,10 +174,16 @@ def gmail_poll():
                 continue
 
             thread_id = f"gmail_{mid[:12]}"
-            config = {"configurable": {"thread_id": thread_id}}
-            result = invoice_graph.invoke(
-                {"raw_message": full_text, "sender_id": sender},
-                config=config,
+            result = gateway.dispatch(
+                NormalizedMessage(
+                    user_id=f"gmail_{mid}",
+                    channel="gmail",
+                    session_id=thread_id,
+                    text=full_text,
+                    raw={"message_id": mid, "subject": subject, "from": sender},
+                    attachments=[],
+                    sender_id=sender,
+                )
             )
             mark_processed(mid)
             processed.append({
