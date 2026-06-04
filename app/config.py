@@ -21,6 +21,17 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_TASTINGROOM_BOT_TOKEN = os.getenv("TELEGRAM_TASTINGROOM_BOT_TOKEN", "")
 TELEGRAM_APPROVAL_CHAT_ID = os.getenv("TELEGRAM_APPROVAL_CHAT_ID", "")
 
+
+def _csv_env(name: str, default: str = "") -> list[str]:
+    return [value.strip() for value in os.getenv(name, default).split(",") if value.strip()]
+
+
+TELEGRAM_TASTINGROOM_AUTHORIZED_CHAT_IDS = _csv_env(
+    "TELEGRAM_TASTINGROOM_AUTHORIZED_CHAT_IDS",
+    TELEGRAM_APPROVAL_CHAT_ID,
+)
+TELEGRAM_TASTINGROOM_AUTHORIZED_USER_IDS = _csv_env("TELEGRAM_TASTINGROOM_AUTHORIZED_USER_IDS")
+
 # Gmail OAuth (base64-encoded token.json; run scripts/google_auth.py to generate)
 GMAIL_TOKEN_JSON_B64 = os.getenv("GMAIL_TOKEN_JSON_B64", "")
 GMAIL_INTAKE_LABEL = os.getenv("GMAIL_INTAKE_LABEL", "To Invoice")
@@ -66,3 +77,11 @@ POSTGRES_CONNECTION_STRING = os.getenv("POSTGRES_CONNECTION_STRING", "")
 MEM0_API_KEY = os.getenv("MEM0_API_KEY", "")
 
 SHIPPING_WAIVER_THRESHOLD_CENTS = 150_000  # $1,500
+
+# Production mode — when True, unsafe fallbacks (MemorySaver, etc.) are disabled.
+# Set PRODUCTION_MODE=true in production; leave unset or false for local dev.
+PRODUCTION_MODE = os.getenv("PRODUCTION_MODE", "false").lower() in ("1", "true", "yes", "on")
+
+# Patch auto-apply — when True, low/medium patches are applied automatically.
+# DISABLED by default. Enable only in dev/staging with explicit review.
+PATCH_AUTO_APPLY = os.getenv("PATCH_AUTO_APPLY", "false").lower() in ("1", "true", "yes", "on")

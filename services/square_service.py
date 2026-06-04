@@ -3,9 +3,24 @@
 All Square API calls go here. The agent graph calls these functions,
 never the Square SDK directly.
 """
+import hashlib
 import uuid
 from datetime import date, timedelta
 from typing import Optional
+
+
+def _ikey(case_id: str, action: str) -> str:
+    """Deterministic Square idempotency key.
+
+    Same case_id + action always produces the same key, so retries after a
+    timeout/network error are safe — Square deduplicates on this key.
+    Format: winefornia:{case_id}:{action}:v1 → SHA-256 hex (64 chars, within Square's 45-char limit truncated to 45).
+    Falls back to a random UUID only when case_id is empty (shouldn't happen in prod).
+    """
+    if not case_id:
+        return str(uuid.uuid4())
+    raw = f"winefornia:{case_id}:{action}:v1"
+    return hashlib.sha256(raw.encode()).hexdigest()[:45]
 
 from app.config import SQUARE_PROD_ACCESS_TOKEN, SQUARE_PROD_LOCATION_ID, SQUARE_LOCATION_ID
 
@@ -28,7 +43,7 @@ def _get_client():
         return None
 
 
-def get_or_create_square_customer(email: str, full_name: str) -> dict:
+def get_or_create_square_customer(email: str, full_name: str, idempotency_key: str = "") -> dict:
     """Look up a customer in Square by email, or create them if not found.
 
     Returns dict with customer_id and status ('found' or 'created'), or error key.
@@ -54,7 +69,7 @@ def get_or_create_square_customer(email: str, full_name: str) -> dict:
         given = parts[0]
         family = parts[1] if len(parts) > 1 else ""
         create_resp = client.customers.create(
-            idempotency_key=str(uuid.uuid4()),
+            idempotency_key=idempotency_key or str(uuid.uuid4()),
             given_name=given,
             family_name=family,
             email_address=email,
@@ -72,7 +87,7 @@ SCHEDULE_TO_DAYS = {
 }
 
 
-def create_order(customer_name: str, line_items: list[dict], location_id: Optional[str] = None) -> dict:
+def create_order(customer_name: str, line_items: list[dict], location_id: Optional[str] = None, idempotency_key: str = "") -> dict:
     """Create a Square order (OPEN state) from priced line items.
 
     line_items: list of dicts with product_name, quantity, unit_type,
@@ -114,7 +129,7 @@ def create_order(customer_name: str, line_items: list[dict], location_id: Option
                 "reference_id": f"winefornia-{uuid.uuid4().hex[:8]}",
                 "line_items": sq_line_items,
             },
-            idempotency_key=str(uuid.uuid4()),
+            idempotency_key=idempotency_key or str(uuid.uuid4()),
         )
         order = response.order
         return {
@@ -137,6 +152,7 @@ def create_invoice_draft(
     payment_schedule: str = "NET_30",
     accepted_payment_methods: Optional[list[str]] = None,
     location_id: Optional[str] = None,
+    idempotency_key: str = "",
 ) -> dict:
     """Create a Square invoice draft linked to an order. Saved only, NOT sent.
 
@@ -180,7 +196,7 @@ def create_invoice_draft(
                 "delivery_method": "SHARE_MANUALLY",
                 "accepted_payment_methods": methods,
             },
-            idempotency_key=str(uuid.uuid4()),
+            idempotency_key=idempotency_key or str(uuid.uuid4()),
         )
         invoice = response.invoice
         return {
@@ -199,7 +215,7 @@ def create_invoice_draft(
         return {"error": str(e)}
 
 
-def publish_invoice(invoice_id: str, invoice_version: int = 0) -> dict:
+def publish_invoice(invoice_id: str, invoice_version: int = 0, idempotency_key: str = "") -> dict:
     """Publish a Square invoice draft. REQUIRES explicit human approval first.
 
     This sends the invoice to the customer.
@@ -211,7 +227,7 @@ def publish_invoice(invoice_id: str, invoice_version: int = 0) -> dict:
         response = client.invoices.publish(
             invoice_id=invoice_id,
             version=invoice_version,
-            idempotency_key=str(uuid.uuid4()),
+            idempotency_key=idempotency_key or str(uuid.uuid4()),
         )
         invoice = response.invoice
         return {

@@ -168,9 +168,9 @@ def _register_all():
 
     # --- Square (write) -----------------------------------------------------
 
-    def _square_create_customer(email: str, full_name: str) -> dict:
+    def _square_create_customer(email: str, full_name: str, idempotency_key: str = "") -> dict:
         from services.square_service import get_or_create_square_customer
-        return get_or_create_square_customer(email=email, full_name=full_name)
+        return get_or_create_square_customer(email=email, full_name=full_name, idempotency_key=idempotency_key)
 
     tool_registry.register(ToolDef(
         name="square_create_customer",
@@ -180,9 +180,9 @@ def _register_all():
         schema={"email": "str", "full_name": "str"},
     ))
 
-    def _square_create_order(customer_name: str, line_items: list, location_id: str = "") -> dict:
+    def _square_create_order(customer_name: str, line_items: list, location_id: str = "", idempotency_key: str = "") -> dict:
         from services.square_service import create_order
-        kwargs = {"customer_name": customer_name, "line_items": line_items}
+        kwargs = {"customer_name": customer_name, "line_items": line_items, "idempotency_key": idempotency_key}
         if location_id:
             kwargs["location_id"] = location_id
         return create_order(**kwargs)
@@ -201,6 +201,7 @@ def _register_all():
         title: str = "Winefornia Invoice",
         payment_schedule: str = "NET_30",
         accepted_payment_methods: list | None = None,
+        idempotency_key: str = "",
     ) -> dict:
         from services.square_service import create_invoice_draft
         return create_invoice_draft(
@@ -209,6 +210,7 @@ def _register_all():
             title=title,
             payment_schedule=payment_schedule,
             accepted_payment_methods=accepted_payment_methods or ["CARD", "BANK_ACCOUNT"],
+            idempotency_key=idempotency_key,
         )
 
     tool_registry.register(ToolDef(
@@ -226,9 +228,9 @@ def _register_all():
         },
     ))
 
-    def _square_publish_invoice(invoice_id: str, invoice_version: int = 0) -> dict:
+    def _square_publish_invoice(invoice_id: str, invoice_version: int = 0, idempotency_key: str = "") -> dict:
         from services.square_service import publish_invoice
-        return publish_invoice(invoice_id=invoice_id, invoice_version=invoice_version)
+        return publish_invoice(invoice_id=invoice_id, invoice_version=invoice_version, idempotency_key=idempotency_key)
 
     tool_registry.register(ToolDef(
         name="square_publish_invoice",

@@ -48,7 +48,9 @@ New fields in InvoiceState vs original:
   _case_id                                       — control layer linkage
 """
 
+import hashlib
 import json
+import os
 import time
 from typing import TypedDict, Literal, Any
 
@@ -110,6 +112,12 @@ class InvoiceState(TypedDict, total=False):
 
     # Response
     final_response: str
+
+    # Reconciliation — set when a critical side effect partially succeeded
+    # (e.g. Square draft created but Supabase log failed).
+    # Must be surfaced to Cecil and resolved manually.
+    reconciliation_needed: bool
+    reconciliation_reason: str
 
 
 # ---------------------------------------------------------------------------
@@ -776,6 +784,16 @@ def approval_gate(state: InvoiceState) -> InvoiceState:
     return {"approval": _parse_approval(str(decision))}
 
 
+def _ikey(case_id: str, action: str) -> str:
+    """Deterministic idempotency key for Square mutations.
+
+    Same case_id + action always returns the same 45-char hex string.
+    Guarantees that a retry after a timeout never creates a duplicate order/invoice.
+    """
+    from services.square_service import _ikey as _sq_ikey
+    return _sq_ikey(case_id, action)
+
+
 def create_square_invoice_draft(state: InvoiceState) -> InvoiceState:
     """Create Square order + invoice draft after approval."""
     from services.tool_registry import tool_registry, ToolError
@@ -809,7 +827,8 @@ def create_square_invoice_draft(state: InvoiceState) -> InvoiceState:
         if email:
             sq_customer = tool_registry.dispatch(
                 "square_create_customer",
-                {"email": email, "full_name": full_name},
+                {"email": email, "full_name": full_name,
+                 "idempotency_key": _ikey(case_id, "create_customer")},
                 case_id=case_id,
             )
             customer_id = sq_customer["customer_id"]
@@ -824,7 +843,8 @@ def create_square_invoice_draft(state: InvoiceState) -> InvoiceState:
     try:
         order_result = tool_registry.dispatch(
             "square_create_order",
-            {"customer_name": full_name, "line_items": state.get("line_items", [])},
+            {"customer_name": full_name, "line_items": state.get("line_items", []),
+             "idempotency_key": _ikey(case_id, "create_order")},
             case_id=case_id,
         )
     except ToolError as e:
@@ -842,21 +862,30 @@ def create_square_invoice_draft(state: InvoiceState) -> InvoiceState:
                 "title": "Winefornia Invoice",
                 "payment_schedule": state.get("payment_schedule", "NET_30"),
                 "accepted_payment_methods": state.get("payment_methods", ["CARD", "BANK_ACCOUNT"]),
+                "idempotency_key": _ikey(case_id, "create_invoice"),
             },
             case_id=case_id,
         )
     except ToolError as e:
         return {"final_response": f"Square invoice error: {e.reason}"}
 
-    # Persist to Supabase (best-effort)
+    # Persist to Supabase — observability-tier, best-effort.
+    # If this fails after Square draft was created, flag for manual reconciliation.
+    _recon_needed = False
     try:
         tool_registry.dispatch(
             "supabase_log_invoice",
             {"record": _build_invoice_log(state, customer, email, full_name, order_id, invoice_result)},
             case_id=case_id,
         )
-    except Exception:
-        pass
+    except Exception as _log_err:
+        _recon_needed = True
+        import logging as _logging
+        _logging.warning(
+            "[invoice] Supabase log failed after Square draft created — reconciliation needed. "
+            "invoice_id=%s order_id=%s error=%s",
+            invoice_result.get("invoice_id"), order_id, _log_err,
+        )
 
     try:
         log_approval_event(
@@ -867,11 +896,19 @@ def create_square_invoice_draft(state: InvoiceState) -> InvoiceState:
     except Exception:
         pass
 
-    return {
+    out: dict = {
         "square_order_id": order_id,
         "square_invoice_id": invoice_result["invoice_id"],
         "square_invoice_version": invoice_result.get("invoice_version", 0),
     }
+    if _recon_needed:
+        out["reconciliation_needed"] = True
+        out["reconciliation_reason"] = (
+            f"Square draft created (invoice_id={invoice_result['invoice_id']}, "
+            f"order_id={order_id}) but Supabase invoice log failed. "
+            "Manually verify and log this invoice."
+        )
+    return out
 
 
 def _build_invoice_log(state, customer, email, full_name, order_id, invoice_result):
@@ -931,6 +968,7 @@ def publish_invoice_node(state: InvoiceState) -> InvoiceState:
     result = publish_invoice(
         invoice_id=state["square_invoice_id"],
         invoice_version=state.get("square_invoice_version", 0),
+        idempotency_key=_ikey(state.get("_case_id", ""), "publish_invoice"),
     )
     if "error" in result:
         return {"final_response": f"Publish failed: {result['error']}. Invoice draft still saved in Square."}
@@ -1151,6 +1189,13 @@ def apply_patch(state: InvoiceState) -> InvoiceState:
 
 
 def respond(state: InvoiceState) -> InvoiceState:
+    recon_suffix = ""
+    if state.get("reconciliation_needed"):
+        recon_suffix = (
+            "\n\n⚠️ RECONCILIATION NEEDED: "
+            + state.get("reconciliation_reason", "Partial success — verify in Square and Supabase.")
+        )
+
     if state.get("send_decision") == "draft" and state.get("square_invoice_id"):
         preview = state.get("invoice_preview", {})
         total = preview.get("total_before_tax_cents", 0) / 100
@@ -1160,9 +1205,11 @@ def respond(state: InvoiceState) -> InvoiceState:
                 f"Draft saved for {customer_name} (${total:.2f}).\n"
                 f"Square Invoice ID: {state['square_invoice_id']}\n"
                 f"(NOT sent — share manually from Square when ready.)"
+                + recon_suffix
             )
         }
-    return {"final_response": state.get("final_response", "Done.")}
+    base = state.get("final_response", "Done.")
+    return {"final_response": base + recon_suffix}
 
 
 # ---------------------------------------------------------------------------
@@ -1330,14 +1377,25 @@ def _make_checkpointer():
       - set autocommit=True      (LangGraph manages its own transactions)
       - append sslmode=require   (Supabase requires TLS)
 
-    Falls back to MemorySaver if POSTGRES_CONNECTION_STRING is unset or
-    the connection fails (e.g. local dev without DB).
+    Production mode (PRODUCTION_MODE=true):
+      - POSTGRES_CONNECTION_STRING is required. Missing or failed → RuntimeError.
+      - MemorySaver fallback is DISABLED. A process restart would silently erase
+        paused approval checkpoints, causing duplicate Square mutations on resume.
+
+    Dev mode (default):
+      - Falls back to MemorySaver when DB is unavailable.
     """
     import logging
-    from app.config import POSTGRES_CONNECTION_STRING
+    from app.config import POSTGRES_CONNECTION_STRING, PRODUCTION_MODE
 
     if not POSTGRES_CONNECTION_STRING:
-        logging.info("[checkpointer] POSTGRES_CONNECTION_STRING not set — using MemorySaver")
+        if PRODUCTION_MODE:
+            raise RuntimeError(
+                "[checkpointer] POSTGRES_CONNECTION_STRING is required in production mode. "
+                "Invoice flow disabled until Postgres is reachable. "
+                "Set PRODUCTION_MODE=false to allow MemorySaver fallback in dev."
+            )
+        logging.info("[checkpointer] POSTGRES_CONNECTION_STRING not set — using MemorySaver (dev only)")
         from langgraph.checkpoint.memory import MemorySaver
         return MemorySaver()
 
@@ -1369,8 +1427,15 @@ def _make_checkpointer():
         return checkpointer
 
     except Exception as exc:
+        if PRODUCTION_MODE:
+            raise RuntimeError(
+                f"[checkpointer] Cannot connect to Postgres in production mode ({exc!r}). "
+                "Invoice flow disabled — unsafe to continue with MemorySaver when paused "
+                "checkpoints must survive process restarts. Fix POSTGRES_CONNECTION_STRING "
+                "or set PRODUCTION_MODE=false to allow MemorySaver fallback."
+            ) from exc
         logging.warning(
-            f"[checkpointer] Postgres unavailable ({exc!r}), falling back to MemorySaver. "
+            f"[checkpointer] Postgres unavailable ({exc!r}), falling back to MemorySaver (dev only). "
             "Paused conversations will not survive a restart."
         )
         from langgraph.checkpoint.memory import MemorySaver

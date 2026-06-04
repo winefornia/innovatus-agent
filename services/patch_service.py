@@ -66,6 +66,12 @@ _PATCH_TYPE_TO_FILES: dict[str, list[str]] = {
 
 _AUTO_APPLY_SEVERITIES = {"low", "medium"}
 
+# Auto-apply is disabled by default. Enable only in dev/staging via env var.
+# In production this must remain false — LLM-generated patches should never
+# be applied to a live financial system without human review.
+import os as _os
+_PATCH_AUTO_APPLY_ENABLED = _os.getenv("PATCH_AUTO_APPLY", "false").lower() in ("1", "true", "yes", "on")
+
 
 @dataclass
 class PatchProposal:
@@ -283,8 +289,17 @@ class PatchService:
         """Apply the patch and run the eval suite to verify it doesn't regress.
 
         Returns True if patch applied and evals pass.
+        Requires PATCH_AUTO_APPLY=true — disabled by default in all environments.
         Only auto-applies for low/medium severity — higher severities need human review.
         """
+        if not _PATCH_AUTO_APPLY_ENABLED:
+            logging.info(
+                "[patch] PATCH_AUTO_APPLY disabled — proposal written to db/patches/%s.json for review. "
+                "Set PATCH_AUTO_APPLY=true in dev/staging to enable auto-apply.",
+                proposal.patch_id,
+            )
+            return False
+
         if proposal.severity not in _AUTO_APPLY_SEVERITIES:
             logging.info(
                 "[patch] severity=%s — NOT auto-applying patch %s. "
