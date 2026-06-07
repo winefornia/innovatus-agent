@@ -51,6 +51,33 @@ class Gateway:
     for tasting room intents.
     """
 
+    @staticmethod
+    def _invoke_with_retry(graph, msg, case_id, config, max_retries=1):
+        """Invoke the graph, retrying once on transient connection errors."""
+        last_exc = None
+        for attempt in range(1 + max_retries):
+            try:
+                return graph.invoke(
+                    {
+                        "raw_message": msg.text,
+                        "sender_id":   msg.sender_id,
+                        "_case_id":    case_id,
+                    },
+                    config=config,
+                )
+            except Exception as e:
+                err = str(e).lower()
+                is_transient = any(s in err for s in [
+                    "ssl syscall", "operation timed out", "connection reset",
+                    "server closed", "consuming input", "broken pipe",
+                ])
+                if is_transient and attempt < max_retries:
+                    logging.warning("[gateway] transient DB error, retrying: %s", e)
+                    last_exc = e
+                    continue
+                raise
+        raise last_exc  # should not reach here
+
     def dispatch(self, msg: NormalizedMessage) -> dict:
         """Run the invoice graph for this message. Returns the graph result dict."""
         from agents.invoice_graph import invoice_graph
@@ -94,15 +121,10 @@ class Gateway:
         )
         control.set_routing(case, decision)
 
-        # Invoke invoice graph
+        # Invoke invoice graph (retry once on transient DB errors)
         try:
-            result = invoice_graph.invoke(
-                {
-                    "raw_message": msg.text,
-                    "sender_id":   msg.sender_id,
-                    "_case_id":    case.case_id,
-                },
-                config=config,
+            result = self._invoke_with_retry(
+                invoice_graph, msg, case.case_id, config
             )
             final = result.get("final_response", "")
 

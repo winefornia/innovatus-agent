@@ -1408,10 +1408,17 @@ def _make_checkpointer():
         if "sslmode" not in conninfo:
             sep = "&" if "?" in conninfo else "?"
             conninfo = f"{conninfo}{sep}sslmode=require"
+        # Add connection timeout to prevent hanging on network issues
+        if "connect_timeout" not in conninfo:
+            sep = "&" if "?" in conninfo else "?"
+            conninfo = f"{conninfo}{sep}connect_timeout=5"
 
         pool = ConnectionPool(
             conninfo=conninfo,
-            max_size=20,
+            min_size=1,            # keep 1 warm connection
+            max_size=5,            # Supabase free tier has limited slots
+            max_idle=300,          # close idle connections after 5 min
+            reconnect_timeout=5,   # retry dropped connections for up to 5s
             kwargs={
                 "autocommit": True,
                 "prepare_threshold": 0,   # pgBouncer transaction mode compat
