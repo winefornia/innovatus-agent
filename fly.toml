@@ -1,5 +1,8 @@
 app = "winefornia-agent"
-primary_region = "sjc"
+# Co-located with Supabase us-east-1 (N. Virginia) to minimize checkpointer
+# round-trip latency — sjc (US-west) added ~70ms/query cross-country, which
+# inflated Postgres timeouts and pushed the Google Chat webhook toward its 30s deadline.
+primary_region = "iad"
 
 [build]
 

@@ -105,9 +105,9 @@ def _run_case(case: dict) -> GraderResult:
         )
 
     try:
-        from agents.supervisor_graph import supervisor
+        from agents.intent_classifier import classify_intent
 
-        decision = supervisor.route(
+        decision = classify_intent(
             raw_message=case["input"],
             user_id="eval_runner",
         )

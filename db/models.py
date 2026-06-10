@@ -144,7 +144,7 @@ class TraceEvent:
     event_type: str                  # input_received | intent_classified | guardrail_check
                                      # | tool_call | tool_result | interrupt_issued
                                      # | human_decision | output_generated | failure
-    layer: str                       # supervisor | invoice_agent | guardrail | human | square | llm
+    layer: str                       # control | invoice_agent | guardrail | human | square | llm
     data: dict = field(default_factory=dict)
     latency_ms: Optional[int] = None
     error: Optional[str] = None

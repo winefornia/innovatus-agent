@@ -18,6 +18,7 @@ import httpx
 from langgraph.types import Command
 
 from agents.invoice_graph import invoice_graph
+from db.retry import invoke_with_retry
 from services.control_layer import control
 from services.invoice_interrupts import current_invoice_interrupt as which
 
@@ -262,7 +263,7 @@ async def on_message(client: httpx.AsyncClient, message: dict) -> None:
         if snapshot and snapshot.next:
             ix = which(snapshot.values)
             if ix in ("missing", "edit_instruction", "edit_clarification"):
-                result   = invoice_graph.invoke(Command(resume=text), config=config)
+                result   = invoke_with_retry(invoice_graph, Command(resume=text), config=config)
                 ix_after = which(result)
                 _close_case_if_done(result, ix_after)
                 await render(client, chat_id, result)
@@ -319,7 +320,7 @@ async def on_callback(client: httpx.AsyncClient, callback_query: dict) -> None:
         resume_val = f"{tier}, {sched}, {methods_str}"
         logging.info("[wizard] resuming with: %r", resume_val)
         try:
-            result = invoice_graph.invoke(Command(resume=resume_val), config=config)
+            result = invoke_with_retry(invoice_graph, Command(resume=resume_val), config=config)
             ix = which(result)
             logging.info("[wizard] result: which=%r tier_name=%r line_items=%d",
                          ix, result.get("tier_name"), len(result.get("line_items", [])))
@@ -345,7 +346,7 @@ async def on_callback(client: httpx.AsyncClient, callback_query: dict) -> None:
     # ── Edit — resume graph with "edit" to route into interpret_edit node ──
     if data == "__edit__":
         try:
-            result   = invoice_graph.invoke(Command(resume="edit"), config=config)
+            result   = invoke_with_retry(invoice_graph, Command(resume="edit"), config=config)
             ix_after = which(result)
             _close_case_if_done(result, ix_after)
             await render(client, chat_id, result)
@@ -380,7 +381,7 @@ async def on_callback(client: httpx.AsyncClient, callback_query: dict) -> None:
 
     try:
         logging.info("[callback] resuming graph with data=%r thread=%s", data, thread_id)
-        result   = invoice_graph.invoke(Command(resume=data), config=config)
+        result   = invoke_with_retry(invoice_graph, Command(resume=data), config=config)
         ix_after = which(result)
         logging.info("[callback] after resume: which=%r keys=%s", ix_after, [k for k in result if result[k] is not None])
         _close_case_if_done(result, ix_after)

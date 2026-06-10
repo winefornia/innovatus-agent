@@ -8,7 +8,7 @@ Usage:
     from services.control_layer import control
 
     case = control.begin_case(text, sender_id, user_id, thread_id)
-    control.set_routing(case, routing_decision)
+    control.set_routing(case, intent="invoice_creation", agent="invoice_agent", risk_level="medium")
     # ... agent runs ...
     control.close_case(case, "success", final_response)
 
@@ -22,55 +22,9 @@ import logging
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
 from db.models import Case, FailureLabel, TraceEvent, EvalCase
-
-if TYPE_CHECKING:
-    from agents.supervisor_graph import RoutingDecision
-
-
-# ---------------------------------------------------------------------------
-# Risk classification — deterministic, never LLM
-# ---------------------------------------------------------------------------
-
-_INTENT_RISK: dict[str, str] = {
-    "event_invoice":   "high",       # bulk action, many customers
-    "outreach":        "medium",     # external comms
-    "invoice_creation": "medium",
-    "tastingroom_reservation": "medium",
-    "tastingroom_order": "medium",
-    "invoice_status":  "low",
-    "customer_lookup": "low",
-    "general_chat":    "low",
-}
-
-_HIGH_VALUE_THRESHOLD_CENTS = 500_000    # $5,000 — escalate to critical
-
-
-def classify_risk(intent: str, entities: dict, confidence: float = 1.0) -> str:
-    """Return risk level based on intent, entities, and routing confidence.
-
-    Deterministic rules only — no LLM.
-    """
-    base = _INTENT_RISK.get(intent, "low")
-
-    # Low confidence on any routing → upgrade to at least medium
-    if confidence < 0.6 and base == "low":
-        base = "medium"
-
-    # Event invoice with many implicit targets → high
-    if intent == "event_invoice":
-        return "high"
-
-    return base
-
-
-def upgrade_risk_for_amount(current_risk: str, total_cents: int) -> str:
-    """Upgrade risk level if invoice total is very large."""
-    if total_cents >= _HIGH_VALUE_THRESHOLD_CENTS and current_risk in ("low", "medium"):
-        return "high"
-    return current_risk
 
 
 # ---------------------------------------------------------------------------
@@ -127,30 +81,28 @@ class ControlLayer:
         except Exception as e:
             logging.debug("[control] begin_case DB write failed: %s", e)
 
-        self._trace(case.case_id, "input_received", "supervisor",
+        self._trace(case.case_id, "input_received", "control",
                     {"input_length": len(raw_input), "sender_id": sender_id})
         return case
 
-    def set_routing(self, case: Case, decision: "RoutingDecision") -> None:
-        """Record the supervisor's routing decision on the case."""
-        case.intent     = decision.intent
-        case.agent      = decision.agent
-        case.risk_level = decision.risk_level
+    def set_routing(self, case: Case, intent: str, agent: str, risk_level: str) -> None:
+        """Record the agent/intent/risk for this case."""
+        case.intent     = intent
+        case.agent      = agent
+        case.risk_level = risk_level
         try:
             from db.repository import update_case
             update_case(case.case_id,
-                        intent=decision.intent,
-                        agent=decision.agent,
-                        risk_level=decision.risk_level)
+                        intent=intent,
+                        agent=agent,
+                        risk_level=risk_level)
         except Exception as e:
             logging.debug("[control] set_routing DB update failed: %s", e)
 
-        self._trace(case.case_id, "intent_classified", "supervisor", {
-            "intent":     decision.intent,
-            "agent":      decision.agent,
-            "risk_level": decision.risk_level,
-            "confidence": decision.confidence,
-            "entities":   list((decision.entities or {}).keys()),
+        self._trace(case.case_id, "intent_classified", "control", {
+            "intent":     intent,
+            "agent":      agent,
+            "risk_level": risk_level,
         })
 
     def close_case(

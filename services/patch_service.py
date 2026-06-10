@@ -45,7 +45,6 @@ _SOURCE_TO_FILES: dict[str, list[str]] = {
     "customer_service":             ["services/customer_service.py"],
     "product_service":              ["services/product_service.py"],
     "square_service":               ["services/square_service.py"],
-    "supervisor":                   ["agents/supervisor_graph.py"],
     "guardrail":                    ["services/guardrail_service.py"],
     "pre_input":                    ["services/guardrail_service.py"],
     "pre_tool":                     ["services/guardrail_service.py"],
@@ -56,10 +55,10 @@ _SOURCE_TO_FILES: dict[str, list[str]] = {
 }
 
 _PATCH_TYPE_TO_FILES: dict[str, list[str]] = {
-    "prompt":    ["agents/invoice_graph.py", "agents/supervisor_graph.py"],
+    "prompt":    ["agents/invoice_graph.py"],
     "guardrail": ["services/guardrail_service.py"],
     "tool":      ["services/square_service.py", "services/customer_service.py"],
-    "routing":   ["agents/supervisor_graph.py"],
+    "routing":   ["agents/intent_classifier.py"],
     "schema":    ["db/models.py", "agents/invoice_graph.py"],
     "workflow":  ["agents/invoice_graph.py"],
 }
@@ -121,7 +120,6 @@ class PatchService:
         if not files:
             # Fallback: include the file most likely related to the responsible layer
             layer_files = {
-                "supervisor":     "agents/supervisor_graph.py",
                 "invoice_agent":  "agents/invoice_graph.py",
                 "guardrail":      "services/guardrail_service.py",
                 "square":         "services/square_service.py",

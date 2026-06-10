@@ -158,9 +158,11 @@ def process_gmail_message(message_id: str, *, labels: list[str] | None = None) -
         return {"message_id": message_id, "status": "skipped", "reason": "empty_message"}
 
     from agents.case_desk_graph import case_desk_graph
+    from db.retry import invoke_with_retry
 
     thread_id = f"tasting_{thread or message_id[:12]}"
-    result = case_desk_graph.invoke(
+    result = invoke_with_retry(
+        case_desk_graph,
         {
             "raw_email": full_text,
             "sender_id": sender,

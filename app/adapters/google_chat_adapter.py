@@ -18,6 +18,7 @@ import logging
 import httpx
 from langgraph.types import Command
 from agents.invoice_graph import invoice_graph
+from db.retry import invoke_with_retry
 from services.gateway import NormalizedMessage, gateway
 from services.invoice_interrupts import current_invoice_interrupt as which
 
@@ -364,7 +365,7 @@ async def _handle_message(event: dict, space_id: str, thread_id: str, config: di
         ix = which(snapshot.values) if snapshot and snapshot.next else None
         if ix in ("missing", "edit_instruction", "edit_clarification"):
             log.info("[gc:message] resuming %s interrupt space=%s", ix, space_id)
-            result = invoice_graph.invoke(Command(resume=text), config=config)
+            result = invoke_with_retry(invoice_graph, Command(resume=text), config=config)
             return render(result, space_id)
     except Exception:
         pass
@@ -422,7 +423,7 @@ async def _handle_card_clicked(event: dict, space_id: str, thread_id: str, confi
         resume_val = f"{tier}, {sched}, {methods_str}"
         log.info("[gc:wizard] resuming with: %r", resume_val)
         try:
-            result = invoice_graph.invoke(Command(resume=resume_val), config=config)
+            result = invoke_with_retry(invoice_graph, Command(resume=resume_val), config=config)
             ix = which(result)
             log.info("[gc:wizard] result: which=%r tier=%r items=%d",
                      ix, result.get("tier_name"), len(result.get("line_items", [])))
@@ -434,7 +435,7 @@ async def _handle_card_clicked(event: dict, space_id: str, thread_id: str, confi
     # ── Edit — resume graph into the edit-instruction checkpoint ─────────
     if action_name == "gc_edit":
         try:
-            result = invoice_graph.invoke(Command(resume="edit"), config=config)
+            result = invoke_with_retry(invoice_graph, Command(resume="edit"), config=config)
             return render(result, space_id, is_card_click=True)
         except Exception as e:
             log.error("[gc:edit] error: %s", e, exc_info=True)
@@ -461,7 +462,7 @@ async def _handle_card_clicked(event: dict, space_id: str, thread_id: str, confi
 
     try:
         log.info("[gc:click] resuming graph action=%r thread=%s", action_name, thread_id)
-        result = invoice_graph.invoke(Command(resume=resume_val), config=config)
+        result = invoke_with_retry(invoice_graph, Command(resume=resume_val), config=config)
         ix_after = which(result)
         log.info("[gc:click] after resume: which=%r", ix_after)
         return render(result, space_id, is_card_click=True)

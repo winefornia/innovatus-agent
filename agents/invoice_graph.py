@@ -1419,6 +1419,12 @@ def _make_checkpointer():
             max_size=5,            # Supabase free tier has limited slots
             max_idle=300,          # close idle connections after 5 min
             reconnect_timeout=5,   # retry dropped connections for up to 5s
+            # Validate every connection on checkout. Supabase's pooler / cloud
+            # NAT silently kills idle TCP connections; without this the pool
+            # hands out a dead socket and the first query throws
+            # "SSL SYSCALL error / consuming input failed". check_connection
+            # runs a cheap liveness ping and transparently replaces dead conns.
+            check=ConnectionPool.check_connection,
             kwargs={
                 "autocommit": True,
                 "prepare_threshold": 0,   # pgBouncer transaction mode compat

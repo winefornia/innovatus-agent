@@ -31,6 +31,11 @@ _PROCESSED_LABEL = os.getenv("GMAIL_PROCESSED_LABEL", "Invoice Processed")
 _FORWARDING_QUERY = os.getenv("GMAIL_FORWARDING_QUERY", 'subject:"To Invoice"')
 _GOOGLE_ACCOUNT_EMAIL = os.getenv("GOOGLE_ACCOUNT_EMAIL", "").strip().lower()
 
+# googleapiclient retries transient failures (5xx, 429 rate limits, socket
+# errors) with exponential backoff + jitter when num_retries > 0. This absorbs
+# Google API hiccups that would otherwise surface as raw 500s to the user.
+_GMAIL_NUM_RETRIES = int(os.getenv("GMAIL_NUM_RETRIES", "3"))
+
 SCOPES = [
     "https://mail.google.com/",
     "https://www.googleapis.com/auth/calendar",
@@ -119,7 +124,7 @@ def _get_service():
 
 
 def _get_label_id(service, label_name: str) -> Optional[str]:
-    results = service.users().labels().list(userId="me").execute()
+    results = service.users().labels().list(userId="me").execute(num_retries=_GMAIL_NUM_RETRIES)
     for label in results.get("labels", []):
         if label["name"] == label_name:
             return label["id"]
@@ -133,14 +138,14 @@ def _ensure_label(service, label_name: str) -> str:
     label = service.users().labels().create(
         userId="me",
         body={"name": label_name, "labelListVisibility": "labelShow", "messageListVisibility": "show"},
-    ).execute()
+    ).execute(num_retries=_GMAIL_NUM_RETRIES)
     return label["id"]
 
 
 def list_labels() -> list[dict]:
     """Return Gmail labels visible to the authenticated account."""
     service = _get_service()
-    return service.users().labels().list(userId="me").execute().get("labels", [])
+    return service.users().labels().list(userId="me").execute(num_retries=_GMAIL_NUM_RETRIES).get("labels", [])
 
 
 def delete_label(label_name: str) -> dict:
@@ -149,7 +154,7 @@ def delete_label(label_name: str) -> dict:
     label_id = _get_label_id(service, label_name)
     if not label_id:
         return {"status": "missing", "label": label_name}
-    service.users().labels().delete(userId="me", id=label_id).execute()
+    service.users().labels().delete(userId="me", id=label_id).execute(num_retries=_GMAIL_NUM_RETRIES)
     return {"status": "deleted", "label": label_name}
 
 
@@ -186,19 +191,19 @@ def list_emails(label_name: str = "", query: str = "", max_results: int = 10) ->
     seen: dict[str, str] = {}
 
     if label_id:
-        res = service.users().messages().list(userId="me", labelIds=[label_id], maxResults=max_results).execute()
+        res = service.users().messages().list(userId="me", labelIds=[label_id], maxResults=max_results).execute(num_retries=_GMAIL_NUM_RETRIES)
         for m in res.get("messages", []):
             seen[m["id"]] = "label"
 
     if query:
-        res = service.users().messages().list(userId="me", q=query, maxResults=max_results).execute()
+        res = service.users().messages().list(userId="me", q=query, maxResults=max_results).execute(num_retries=_GMAIL_NUM_RETRIES)
         for m in res.get("messages", []):
             seen.setdefault(m["id"], "query")
 
     messages = []
     for mid in list(seen)[:max_results]:
         msg = service.users().messages().get(userId="me", id=mid, format="metadata",
-                                              metadataHeaders=["Subject", "From", "Date"]).execute()
+                                              metadataHeaders=["Subject", "From", "Date"]).execute(num_retries=_GMAIL_NUM_RETRIES)
         headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
         messages.append({
             "message_id": msg["id"],
@@ -226,12 +231,12 @@ def list_emails_multi(
         label_id = _get_label_id(service, label_name)
         if not label_id:
             continue
-        res = service.users().messages().list(userId="me", labelIds=[label_id], maxResults=max_results).execute()
+        res = service.users().messages().list(userId="me", labelIds=[label_id], maxResults=max_results).execute(num_retries=_GMAIL_NUM_RETRIES)
         for m in res.get("messages", []):
             seen.setdefault(m["id"], f"label:{label_name}")
 
     if query:
-        res = service.users().messages().list(userId="me", q=query, maxResults=max_results).execute()
+        res = service.users().messages().list(userId="me", q=query, maxResults=max_results).execute(num_retries=_GMAIL_NUM_RETRIES)
         for m in res.get("messages", []):
             seen.setdefault(m["id"], "query")
 
@@ -242,7 +247,7 @@ def list_emails_multi(
             id=mid,
             format="metadata",
             metadataHeaders=["Subject", "From", "To", "Date"],
-        ).execute()
+        ).execute(num_retries=_GMAIL_NUM_RETRIES)
         headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
         label_names_for_message = _message_label_names(service, msg.get("labelIds", []))
         messages.append({
@@ -267,7 +272,7 @@ def list_thread_messages(thread_id: str, *, max_results: int = 20) -> list[dict]
         id=thread_id,
         format="metadata",
         metadataHeaders=["Subject", "From", "To", "Date"],
-    ).execute()
+    ).execute(num_retries=_GMAIL_NUM_RETRIES)
     messages = []
     for msg in (thread.get("messages") or [])[-max_results:]:
         headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
@@ -285,7 +290,7 @@ def list_thread_messages(thread_id: str, *, max_results: int = 20) -> list[dict]
 
 
 def _message_label_names(service, label_ids: list[str]) -> list[str]:
-    labels = service.users().labels().list(userId="me").execute().get("labels", [])
+    labels = service.users().labels().list(userId="me").execute(num_retries=_GMAIL_NUM_RETRIES).get("labels", [])
     names = {label["id"]: label["name"] for label in labels}
     return [names.get(label_id, label_id) for label_id in label_ids]
 
@@ -293,14 +298,14 @@ def _message_label_names(service, label_ids: list[str]) -> list[str]:
 def get_message_label_names(message_id: str) -> list[str]:
     """Return label names currently attached to a message."""
     service = _get_service()
-    msg = service.users().messages().get(userId="me", id=message_id, format="metadata").execute()
+    msg = service.users().messages().get(userId="me", id=message_id, format="metadata").execute(num_retries=_GMAIL_NUM_RETRIES)
     return _message_label_names(service, msg.get("labelIds", []))
 
 
 def read_email(message_id: str) -> dict:
     """Read full content of an email by message ID."""
     service = _get_service()
-    msg = service.users().messages().get(userId="me", id=message_id, format="full").execute()
+    msg = service.users().messages().get(userId="me", id=message_id, format="full").execute(num_retries=_GMAIL_NUM_RETRIES)
     headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
     body = _decode_body(msg.get("payload", {}))
     return {
@@ -341,7 +346,7 @@ def apply_message_labels(
         modify_body["removeLabelIds"] = remove_ids
 
     if modify_body:
-        service.users().messages().modify(userId="me", id=message_id, body=modify_body).execute()
+        service.users().messages().modify(userId="me", id=message_id, body=modify_body).execute(num_retries=_GMAIL_NUM_RETRIES)
     return {"status": "labeled", "message_id": message_id, "added": add_labels or [], "removed": remove_labels or []}
 
 
@@ -373,7 +378,7 @@ def send_email(to: str, subject: str, html: str, plain: str = "") -> dict:
     msg.attach(MIMEText(html, "html"))
 
     raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-    result = service.users().messages().send(userId="me", body={"raw": raw}).execute()
+    result = service.users().messages().send(userId="me", body={"raw": raw}).execute(num_retries=_GMAIL_NUM_RETRIES)
     return {"message_id": result["id"], "thread_id": result.get("threadId"), "to": to}
 
 
