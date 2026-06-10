@@ -14,6 +14,7 @@ Event flow:
 Thread ID scheme: gc_{space_id}   (e.g. gc_AAAAbcde1fg)
 """
 
+import asyncio
 import logging
 import httpx
 from langgraph.types import Command
@@ -26,6 +27,35 @@ log = logging.getLogger(__name__)
 
 # Per-space tier wizard accumulator  {space_id: {tier, schedule}}
 _wizard: dict[str, dict] = {}
+
+# Serialize events per conversation. Google Chat retries a webhook if it doesn't
+# get a 200 within ~30s, and a user can double-click a card — either can fire two
+# events for the same space concurrently. Without this, two graph.invoke calls
+# race on the same checkpoint (gc_<space_id>) and corrupt it.
+_locks: dict[str, asyncio.Lock] = {}
+
+# Dedup retried MESSAGE events by resource name. A fresh dispatch opens a new case
+# with a new Square idempotency key, so re-running a retried message would create a
+# SECOND draft rather than being deduped — drop the retry instead.
+_seen_messages: set[str] = set()
+_SEEN_MAX = 500
+
+
+def _lock_for(thread_id: str) -> asyncio.Lock:
+    lock = _locks.get(thread_id)
+    if lock is None:
+        lock = _locks[thread_id] = asyncio.Lock()
+    return lock
+
+
+def _already_seen(message_name: str) -> bool:
+    """True if this Google Chat message was already handled (i.e. a webhook retry)."""
+    if message_name in _seen_messages:
+        return True
+    _seen_messages.add(message_name)
+    if len(_seen_messages) > _SEEN_MAX:
+        _seen_messages.clear()   # cheap bound; the per-space lock covers the gap
+    return False
 
 # Stale-click guard: maps action name → valid interrupt stages
 _VALID_AT: dict[str, set[str]] = {
@@ -316,10 +346,16 @@ async def handle_google_chat_event(event: dict) -> dict:
     config     = {"configurable": {"thread_id": thread_id}}
 
     if event_type == "MESSAGE":
-        return await _handle_message(event, space_id, thread_id, config)
+        message_name = event.get("message", {}).get("name", "")
+        async with _lock_for(thread_id):
+            if message_name and _already_seen(message_name):
+                log.info("[gc] dropping duplicate MESSAGE %s", message_name)
+                return {"text": ""}
+            return await _handle_message(event, space_id, thread_id, config)
 
     if event_type == "CARD_CLICKED":
-        return await _handle_card_clicked(event, space_id, thread_id, config)
+        async with _lock_for(thread_id):
+            return await _handle_card_clicked(event, space_id, thread_id, config)
 
     return _text("Unknown event type.")
 
@@ -346,7 +382,7 @@ async def _handle_message(event: dict, space_id: str, thread_id: str, config: di
             if pdf_bytes:
                 try:
                     from services.pdf_service import extract_invoice_fields_from_pdf
-                    extracted = extract_invoice_fields_from_pdf(pdf_bytes)
+                    extracted = await asyncio.to_thread(extract_invoice_fields_from_pdf, pdf_bytes)
                     text = extracted  # use extracted text instead of message text
                     log.info("[gc:pdf] extracted %d chars from PDF", len(extracted))
                 except Exception as e:
@@ -361,11 +397,11 @@ async def _handle_message(event: dict, space_id: str, thread_id: str, config: di
 
     # If there's a pending text-input interrupt, resume it
     try:
-        snapshot = invoice_graph.get_state(config)
+        snapshot = await asyncio.to_thread(invoice_graph.get_state, config)
         ix = which(snapshot.values) if snapshot and snapshot.next else None
         if ix in ("missing", "edit_instruction", "edit_clarification"):
             log.info("[gc:message] resuming %s interrupt space=%s", ix, space_id)
-            result = invoke_with_retry(invoice_graph, Command(resume=text), config=config)
+            result = await asyncio.to_thread(invoke_with_retry, invoice_graph, Command(resume=text), config=config)
             return render(result, space_id)
     except Exception:
         pass
@@ -374,7 +410,8 @@ async def _handle_message(event: dict, space_id: str, thread_id: str, config: di
     # workflow records match the Telegram/API paths.
     log.info("[gc:message] new run space=%s text=%r", space_id, text[:80])
     try:
-        result = gateway.dispatch(
+        result = await asyncio.to_thread(
+            gateway.dispatch,
             NormalizedMessage(
                 user_id=f"gc_{sender_id}",
                 channel="google_chat",
@@ -383,7 +420,7 @@ async def _handle_message(event: dict, space_id: str, thread_id: str, config: di
                 raw={"space_id": space_id, "sender_id": sender_id},
                 attachments=[],
                 sender_id=sender_id,
-            )
+            ),
         )
         ix = which(result)
         log.info("[gc:run] which=%r intent=%r customer_confirmed=%r tier=%r",
@@ -423,7 +460,7 @@ async def _handle_card_clicked(event: dict, space_id: str, thread_id: str, confi
         resume_val = f"{tier}, {sched}, {methods_str}"
         log.info("[gc:wizard] resuming with: %r", resume_val)
         try:
-            result = invoke_with_retry(invoice_graph, Command(resume=resume_val), config=config)
+            result = await asyncio.to_thread(invoke_with_retry, invoice_graph, Command(resume=resume_val), config=config)
             ix = which(result)
             log.info("[gc:wizard] result: which=%r tier=%r items=%d",
                      ix, result.get("tier_name"), len(result.get("line_items", [])))
@@ -435,7 +472,7 @@ async def _handle_card_clicked(event: dict, space_id: str, thread_id: str, confi
     # ── Edit — resume graph into the edit-instruction checkpoint ─────────
     if action_name == "gc_edit":
         try:
-            result = invoke_with_retry(invoice_graph, Command(resume="edit"), config=config)
+            result = await asyncio.to_thread(invoke_with_retry, invoice_graph, Command(resume="edit"), config=config)
             return render(result, space_id, is_card_click=True)
         except Exception as e:
             log.error("[gc:edit] error: %s", e, exc_info=True)
@@ -444,7 +481,7 @@ async def _handle_card_clicked(event: dict, space_id: str, thread_id: str, confi
     # ── All other card actions → stale-click guard then resume graph ───────
     if action_name in _VALID_AT:
         try:
-            snapshot = invoice_graph.get_state(config)
+            snapshot = await asyncio.to_thread(invoice_graph.get_state, config)
             ix = which(snapshot.values) if snapshot else None
         except Exception:
             ix = None
@@ -462,7 +499,7 @@ async def _handle_card_clicked(event: dict, space_id: str, thread_id: str, confi
 
     try:
         log.info("[gc:click] resuming graph action=%r thread=%s", action_name, thread_id)
-        result = invoke_with_retry(invoice_graph, Command(resume=resume_val), config=config)
+        result = await asyncio.to_thread(invoke_with_retry, invoice_graph, Command(resume=resume_val), config=config)
         ix_after = which(result)
         log.info("[gc:click] after resume: which=%r", ix_after)
         return render(result, space_id, is_card_click=True)
