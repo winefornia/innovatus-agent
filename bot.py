@@ -21,6 +21,7 @@ from agents.invoice_graph import invoice_graph
 from db.retry import invoke_with_retry
 from services.control_layer import control
 from services.invoice_interrupts import current_invoice_interrupt as which
+from services.invoice_interrupts import clarifying_question
 
 
 def _close_case_if_done(result: dict, ix_after: str | None) -> None:
@@ -98,9 +99,13 @@ async def render(client: httpx.AsyncClient, chat_id: int, state: dict) -> None:
     ix = which(state)
 
     if ix == "missing":
-        fields = state.get("missing_fields", [])
-        await send(client, chat_id,
-            "I need a bit more info. Please provide:\n• " + "\n• ".join(fields))
+        q = clarifying_question(state)
+        if q:
+            await send(client, chat_id, q)
+        else:
+            fields = state.get("missing_fields", [])
+            await send(client, chat_id,
+                "I need a bit more info. Please provide:\n• " + "\n• ".join(fields))
 
     elif ix == "confirm_customer":
         c = state.get("customer", {})

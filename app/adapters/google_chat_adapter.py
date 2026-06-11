@@ -25,6 +25,7 @@ from agents.invoice_graph import invoice_graph
 from db.retry import invoke_with_retry
 from services.gateway import NormalizedMessage, gateway
 from services.invoice_interrupts import current_invoice_interrupt as which
+from services.invoice_interrupts import clarifying_question
 from app.adapters.gchat_format import (
     normalize_addon_event as _normalize_addon_event,
     wrap_addon_response as _wrap_addon_response,
@@ -210,6 +211,9 @@ def render(state: dict, space_id: str, *, is_card_click: bool = False) -> dict:
     ix = which(state)
 
     if ix == "missing":
+        q = clarifying_question(state)
+        if q:
+            return _text(q, is_card_click=is_card_click)
         fields = state.get("missing_fields", [])
         return _text("I need a bit more info. Please provide:\n• " + "\n• ".join(fields),
                       is_card_click=is_card_click)
