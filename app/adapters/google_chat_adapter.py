@@ -15,13 +15,20 @@ Thread ID scheme: gc_{space_id}   (e.g. gc_AAAAbcde1fg)
 """
 
 import asyncio
+import base64
+import json
 import logging
+import os
 import httpx
 from langgraph.types import Command
 from agents.invoice_graph import invoice_graph
 from db.retry import invoke_with_retry
 from services.gateway import NormalizedMessage, gateway
 from services.invoice_interrupts import current_invoice_interrupt as which
+from app.adapters.gchat_format import (
+    normalize_addon_event as _normalize_addon_event,
+    wrap_addon_response as _wrap_addon_response,
+)
 
 log = logging.getLogger(__name__)
 
@@ -300,30 +307,105 @@ def _extract_text(event: dict) -> str:
     return text.strip()
 
 
-async def _download_attachment(attachment: dict, bearer_token: str | None) -> bytes | None:
-    """Download a Google Chat attachment via its download URI."""
-    download_uri = attachment.get("attachmentDataRef", {}).get("resourceName")
-    content_uri = attachment.get("downloadUri")
-    # Google Chat HTTP apps get downloadUri directly in some cases
-    uri = content_uri or download_uri
+def _chat_user_creds(sender_email: str = ""):
+    """User OAuth creds (with chat.messages.readonly) to download attachments.
+
+    Reuses the same GOOGLE_TOKEN_JSON_B64_<ACCOUNT> secrets the Gmail path uses.
+    A user who is a member of the space can read its attachments, so we prefer
+    the sender's token and fall back to the configured default account.
+    """
+    import base64 as _b64
+    import json as _json
+    import os as _os
+    from google.oauth2.credentials import Credentials
+
+    def _b64_for(email: str) -> str | None:
+        if not email or "@" not in email:
+            return None
+        safe = email.upper().replace("@", "_").replace(".", "_").replace("-", "_")
+        return _os.environ.get(f"GOOGLE_TOKEN_JSON_B64_{safe}")
+
+    raw = _b64_for(sender_email) or _b64_for(_os.environ.get("GOOGLE_ACCOUNT_EMAIL", ""))
+    if not raw:
+        return None
+    info = _json.loads(_b64.b64decode(raw).decode())
+    return Credentials.from_authorized_user_info(info)
+
+
+async def _download_chat_media(resource_name: str, sender_email: str = "") -> bytes | None:
+    """Download an UPLOADED_CONTENT attachment via the Chat API media endpoint."""
+    creds = _chat_user_creds(sender_email)
+    if not creds:
+        log.error("[gc:download] no usable Google OAuth token for sender=%r", sender_email)
+        return None
+    from urllib.parse import quote
+    from google.auth.transport.requests import Request as _GReq
+    await asyncio.to_thread(creds.refresh, _GReq())
+    granted = sorted(getattr(creds, "scopes", None) or [])
+    log.info("[gc:download] token scopes=%s", granted)
+    url = f"https://chat.googleapis.com/v1/media/{quote(resource_name, safe='')}?alt=media"
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(url, headers={"Authorization": f"Bearer {creds.token}"},
+                             follow_redirects=True)
+        if r.status_code != 200:
+            log.error("[gc:download] media %s body=%s", r.status_code, r.text[:400])
+            r.raise_for_status()
+        return r.content
+
+
+async def _download_attachment(attachment: dict, sender_email: str = "") -> bytes | None:
+    """Download a Google Chat attachment.
+
+    Uploaded files (source=UPLOADED_CONTENT) must be fetched via the Chat media
+    API using attachmentDataRef.resourceName + a credential that can read the
+    message. The browser-facing downloadUri (chat.google.com/api/get_attachment_url)
+    needs a logged-in user session and returns an HTML page to a programmatic
+    caller, which then fails downstream as an "invalid PDF" — so we never use it
+    for uploaded content.
+    """
+    ref = attachment.get("attachmentDataRef") or {}
+    resource_name = ref.get("resourceName")
+    if resource_name:
+        try:
+            return await _download_chat_media(resource_name, sender_email)
+        except Exception as e:
+            log.error("[gc:download] Chat media API download failed: %s", e)
+            return None
+
+    # Fallback only for link-style attachments (source=DRIVE_FILE / external URL).
+    uri = attachment.get("downloadUri")
     if not uri:
         return None
     try:
-        headers = {}
-        if bearer_token:
-            headers["Authorization"] = f"Bearer {bearer_token}"
         async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.get(uri, headers=headers, follow_redirects=True)
+            r = await client.get(uri, follow_redirects=True)
             r.raise_for_status()
             return r.content
     except Exception as e:
-        log.error("[gc:download] failed to download attachment: %s", e)
+        log.error("[gc:download] fallback download failed: %s", e)
         return None
 
 
 # ── Main dispatcher ──────────────────────────────────────────────────────────
 
+# ── New "Workspace add-on" event format adapter ──────────────────────────────
+# Google's updated Chat app event format nests everything under `chat` and wraps
+# the synchronous response in hostAppDataAction. We normalize inbound events into
+# the classic shape the dispatcher already understands, then wrap the response.
+# Docs: https://developers.google.com/workspace/add-ons/chat/quickstart-http
+
 async def handle_google_chat_event(event: dict) -> dict:
+    """Entry point. Detects event format, normalizes, dispatches, wraps response."""
+    is_addon = "chat" in event
+    if is_addon:
+        event = _normalize_addon_event(event)
+    resp = await _dispatch_classic_event(event)
+    if is_addon:
+        resp = _wrap_addon_response(resp)
+    return resp
+
+
+async def _dispatch_classic_event(event: dict) -> dict:
     event_type = event.get("type", "")
 
     if event_type == "ADDED_TO_SPACE":
@@ -378,7 +460,7 @@ async def _handle_message(event: dict, space_id: str, thread_id: str, config: di
         name = att.get("name", "")
         if "pdf" in content_type or name.lower().endswith(".pdf"):
             log.info("[gc:message] PDF attachment detected: %s", name)
-            pdf_bytes = await _download_attachment(att, bearer_token=None)
+            pdf_bytes = await _download_attachment(att, sender_email=sender_id)
             if pdf_bytes:
                 try:
                     from services.pdf_service import extract_invoice_fields_from_pdf

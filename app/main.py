@@ -12,12 +12,22 @@ Endpoints:
   GET  /health                  — health check
 """
 
+import logging
+import time
 import uuid
 from typing import Optional
 
 from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
+
+# Surface app INFO logs to stdout (Fly). Without this, the root logger sits at
+# WARNING and every log.info("[gc:...]") trace is silently dropped.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+log = logging.getLogger("winefornia.main")
 
 from services.gateway import NormalizedMessage, gateway, from_api, from_pdf
 from services.pdf_service import extract_invoice_fields_from_pdf
@@ -234,7 +244,17 @@ def recent_reservations(limit: int = 20):
 @app.post("/webhooks/google-chat")
 async def google_chat_webhook(request: Request):
     event = await request.json()
-    return await handle_google_chat_event(event)
+    # New add-on format nests everything under "chat"; classic format is top-level.
+    etype = event.get("type") or ("chat-event" if "chat" in event else "?")
+    t0 = time.monotonic()
+    resp = await handle_google_chat_event(event)
+    dt = time.monotonic() - t0
+    # Duration is the canary: if it ever climbs toward 30s, Google will show
+    # "not responding" before our 200 lands. Log the action key, not the body
+    # (avoids writing customer data / auth tokens to logs).
+    action = next(iter(resp), "?") if isinstance(resp, dict) else "?"
+    log.info("[gc:webhook] type=%s done in %.2fs resp_key=%s", etype, dt, action)
+    return resp
 
 
 @app.get("/activity", response_class=HTMLResponse)
@@ -259,4 +279,22 @@ def activity_page(request: Request, limit: int = 20, key: str = ""):
 
 @app.get("/health")
 def health():
+    # Liveness: process is up. Keep this dependency-free so a DB blip never
+    # trips Fly's machine health check into a restart loop.
     return {"status": "ok", "service": "winefornia-invoice-agent"}
+
+
+@app.get("/health/ready")
+def health_ready():
+    """Readiness: verifies the DB read path. Point an uptime monitor here.
+
+    Returns 503 if the database is unreachable so outages are detectable
+    externally (the plain /health stays green as long as the process lives).
+    """
+    try:
+        from db.repository import list_recent_invoices
+        list_recent_invoices(limit=1)
+        return {"status": "ok", "db": "ok"}
+    except Exception as e:
+        log.error("[health] readiness check failed: %s", e)
+        return JSONResponse(status_code=503, content={"status": "degraded", "db": "error", "detail": str(e)[:200]})

@@ -9,6 +9,7 @@ Auth (two modes, checked in order):
 """
 import base64
 import json
+import logging
 import os
 import re
 from email.mime.multipart import MIMEMultipart
@@ -242,12 +243,19 @@ def list_emails_multi(
 
     messages = []
     for mid in list(seen)[:max_results]:
-        msg = service.users().messages().get(
-            userId="me",
-            id=mid,
-            format="metadata",
-            metadataHeaders=["Subject", "From", "To", "Date"],
-        ).execute(num_retries=_GMAIL_NUM_RETRIES)
+        # Fetch metadata per message defensively: a single message that can't be
+        # read (e.g. Gmail "Precondition check failed" on a message that moved or
+        # was deleted between list and get) must NOT abort the whole poll batch.
+        try:
+            msg = service.users().messages().get(
+                userId="me",
+                id=mid,
+                format="metadata",
+                metadataHeaders=["Subject", "From", "To", "Date"],
+            ).execute(num_retries=_GMAIL_NUM_RETRIES)
+        except Exception as exc:
+            logging.warning("[gmail] skipping message %s (metadata fetch failed): %s", mid, exc)
+            continue
         headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
         label_names_for_message = _message_label_names(service, msg.get("labelIds", []))
         messages.append({

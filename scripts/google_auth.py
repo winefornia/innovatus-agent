@@ -7,6 +7,8 @@ Run this locally (one time) then deploy the token to Fly.io:
 
 Uses the OAuth credentials from the innovatus api project.
 """
+from __future__ import annotations  # allow `str | None` annotations on Python 3.9
+
 import argparse
 import base64
 import json
