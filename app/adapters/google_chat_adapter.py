@@ -292,7 +292,38 @@ async def _download_attachment(attachment: dict, bearer_token: str | None) -> by
 
 # ── Main dispatcher ──────────────────────────────────────────────────────────
 
+# ── Workspace Add-on format bridge ───────────────────────────────────────────
+# The app is deployed as a Google Workspace Add-on, whose events nest under
+# `chat` (messagePayload / buttonClickedPayload …) with a top-level
+# commonEventObject, and require responses wrapped in hostAppDataAction.
+#
+# CRITICAL: in this format a card button's action.function must be the app's
+# full HTTP endpoint URL — the real action name rides in action.parameters and
+# returns in commonEventObject.parameters. A bare method name ("gc_approve")
+# leaves Google with nowhere to deliver the click → "unable to process". The
+# normalize/wrap/rewrite helpers below (in gchat_format) handle this; they are
+# pure + unit-testable and are the proven implementation recovered from the
+# last-known-good deployment.
+
+from app.adapters.gchat_format import (
+    normalize_addon_event as _normalize_addon_event,
+    wrap_addon_response as _wrap_addon_response,
+)
+
+
 async def handle_google_chat_event(event: dict) -> dict:
+    """Entry point. Detects event format, normalizes, dispatches, wraps response."""
+    is_addon = "chat" in event
+    if is_addon:
+        log.info("[gc:addon] normalizing Workspace Add-on event")
+        event = _normalize_addon_event(event)
+    resp = await _route_event(event)
+    if is_addon:
+        resp = _wrap_addon_response(resp)
+    return resp
+
+
+async def _route_event(event: dict) -> dict:
     event_type = event.get("type", "")
 
     if event_type == "ADDED_TO_SPACE":

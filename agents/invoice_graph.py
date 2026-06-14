@@ -1373,7 +1373,8 @@ def _make_checkpointer():
     """Return a Postgres checkpointer via Supabase pgBouncer (port 6543).
 
     pgBouncer runs in transaction pooling mode, so we must:
-      - set prepare_threshold=0  (disables server-side prepared statements)
+      - set prepare_threshold=None (disables server-side prepared statements;
+        prepare_threshold=0 means "prepare on first use" and WILL collide here)
       - set autocommit=True      (LangGraph manages its own transactions)
       - append sslmode=require   (Supabase requires TLS)
 
@@ -1431,20 +1432,38 @@ def _make_checkpointer():
             check=ConnectionPool.check_connection,  # validate before handing out
             kwargs={
                 "autocommit": True,
-                "prepare_threshold": 0,   # pgBouncer transaction mode compat
+                # pgBouncer/Supabase TRANSACTION pooler shares physical
+                # connections across clients, so server-side prepared statements
+                # collide ('prepared statement "_pg3_0" already exists').
+                # None = never use named prepared statements. (0 would mean
+                # "prepare on first use" — the exact opposite, and the bug.)
+                "prepare_threshold": None,
             },
             open=False,
         )
-        pool.open(wait=True, timeout=10.0)
-
-        checkpointer = PostgresSaver(pool)
-        checkpointer.setup()   # Creates langgraph_checkpoints / writes tables (idempotent)
-
-        logging.info(
-            "[checkpointer] Connected to Postgres via pgBouncer "
-            "(pool min=1 max=10, check+recycle enabled) — conversations are persistent"
-        )
-        return checkpointer
+        # Retry the connect+setup a few times. On a rolling deploy, all machines
+        # reconnect at once and the Supabase pooler can momentarily refuse a
+        # connection (transient PoolTimeout). Without this, a single hiccup would
+        # crash the process in production mode and trigger a restart storm.
+        import time as _time
+        last_exc = None
+        for attempt in range(1, 5):
+            try:
+                pool.open(wait=True, timeout=10.0)
+                checkpointer = PostgresSaver(pool)
+                checkpointer.setup()   # creates langgraph checkpoint tables (idempotent)
+                logging.info(
+                    "[checkpointer] Connected to Postgres via pgBouncer "
+                    "(pool min=1 max=10, check+recycle enabled, attempt %d) — persistent",
+                    attempt,
+                )
+                return checkpointer
+            except Exception as e:
+                last_exc = e
+                logging.warning("[checkpointer] connect attempt %d/4 failed: %r", attempt, e)
+                if attempt < 4:
+                    _time.sleep(3.0)
+        raise last_exc
 
     except Exception as exc:
         if PRODUCTION_MODE:

@@ -12,12 +12,22 @@ Endpoints:
   GET  /health                  — health check
 """
 
+import logging
 import uuid
 from typing import Optional
 
 from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
+
+# The web process runs under uvicorn, which only configures its own loggers.
+# Without this, the root logger defaults to WARNING and every app-level INFO
+# log (Google Chat adapter, gateway, control layer) is silently dropped — the
+# bots (bot.py / tastingroom_bot.py) set this up themselves; the web didn't.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
 
 from services.gateway import NormalizedMessage, gateway, from_api, from_pdf
 from services.pdf_service import extract_invoice_fields_from_pdf
@@ -234,6 +244,19 @@ def recent_reservations(limit: int = 20):
 @app.post("/webhooks/google-chat")
 async def google_chat_webhook(request: Request):
     event = await request.json()
+    # Diagnostic: surface the raw event shape so we can tell why messages
+    # may not be routed (legacy vs newer Chat payload formats).
+    try:
+        import logging as _lg
+        _lg.getLogger("winefornia.main").info(
+            "[gc:webhook:raw] type=%r top_keys=%s msg_keys=%s chat_keys=%s",
+            event.get("type"),
+            list(event.keys()),
+            list((event.get("message") or {}).keys()),
+            list((event.get("chat") or {}).keys()),
+        )
+    except Exception:
+        pass
     return await handle_google_chat_event(event)
 
 
