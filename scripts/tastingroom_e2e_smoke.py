@@ -21,7 +21,7 @@ os.environ.setdefault("POSTGRES_CONNECTION_STRING", "")
 os.environ["TELEGRAM_APPROVAL_CHAT_ID"] = ""
 os.environ["TELEGRAM_TASTINGROOM_BOT_TOKEN"] = ""
 
-from agents.tastingroom_graph import tastingroom_graph
+from agents.case_desk_graph import case_desk_graph
 from db.repository import get_reservation
 from services.tastingroom_service import process_action_decision
 
@@ -45,7 +45,7 @@ def _patch_send_email() -> None:
 
 
 def _invoke(subject: str, sender: str, body: str, msg_id: str, thread_id: str) -> dict:
-    return tastingroom_graph.invoke(
+    return case_desk_graph.invoke(
         {
             "raw_email": f"Subject: {subject}\nFrom: {sender}\n\n{body}",
             "sender_id": sender,

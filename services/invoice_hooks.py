@@ -11,7 +11,7 @@ Events:
     post_tool_call     → after tool_registry.dispatch (result, latency, error)
     on_interrupt       → LangGraph interrupt issued (type, payload keys)
     on_human_decision  → human resumes a LangGraph interrupt (decision, raw value)
-    on_case_failure    → failure labeled (triggers patch_service in background)
+    on_case_failure    → failure labeled (logged + persisted for review)
     on_case_close      → case completed (triggers skill synthesis in background)
 
 Usage:

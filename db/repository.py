@@ -525,6 +525,40 @@ def update_case(case_id: str, **fields) -> None:
     client.table("agent_cases").update(fields).eq("case_id", case_id).execute()
 
 
+def get_case_row(case_id: str) -> Optional[dict]:
+    """Return the agent_cases row for case_id, or None."""
+    client = _get_client()
+    resp = (
+        client.table("agent_cases")
+        .select("*")
+        .eq("case_id", case_id)
+        .limit(1)
+        .execute()
+    )
+    rows = resp.data or []
+    return rows[0] if rows else None
+
+
+def list_stale_running_cases(older_than_iso: str, limit: int = 500) -> list[dict]:
+    """Return cases still in 'running' that were created before `older_than_iso`.
+
+    Used by the stale-case reaper to find orphans/zombies left behind by a
+    process kill or a resume-after-restart (where the in-memory case registry
+    was lost).
+    """
+    client = _get_client()
+    resp = (
+        client.table("agent_cases")
+        .select("case_id,sender_id,intent,created_at")
+        .eq("status", "running")
+        .lt("created_at", older_than_iso)
+        .order("created_at")
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
+
+
 def insert_trace_event(event: TraceEvent) -> None:
     client = _get_client()
     client.table("trace_events").insert({

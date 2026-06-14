@@ -19,9 +19,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Optional
 
 from db.models import Case, FailureLabel, TraceEvent, EvalCase
@@ -95,10 +96,74 @@ class ControlLayer:
         # In-memory case registry so graph nodes can look up the active Case
         # by case_id (a plain string safe to store in LangGraph state).
         self._active_cases: dict[str, "Case"] = {}
+        # case_ids already closed this process — guards against double-close
+        # when both the gateway and a bot resume-path try to finalize.
+        self._closed_ids: set[str] = set()
 
     def get_case(self, case_id: str) -> "Optional[Case]":
-        """Return the active Case for case_id, or None if not found."""
-        return self._active_cases.get(case_id)
+        """Return the Case for case_id.
+
+        Falls back to the DB if the case isn't in the in-memory registry. This
+        is the fix for resume-after-restart orphans: the in-memory registry is
+        wiped on every process restart, but the LangGraph checkpoint (and the
+        agent_cases row) survive — so a user resuming a paused interrupt could
+        previously never get their case closed. Rehydrating from the DB lets the
+        resume path close it normally.
+        """
+        case = self._active_cases.get(case_id)
+        if case is not None:
+            return case
+
+        # Already closed this process — nothing to rehydrate.
+        if case_id in self._closed_ids:
+            return None
+
+        try:
+            from db.repository import get_case_row
+            row = get_case_row(case_id)
+        except Exception as e:
+            self._report("get_case DB read failed", case_id, e)
+            return None
+
+        if not row or row.get("status") != "running":
+            return None  # gone or already terminal — don't resurrect
+
+        case = Case(
+            case_id=row["case_id"],
+            sender_id=row.get("sender_id") or "",
+            user_id=row.get("user_id") or "",
+            thread_id=row.get("thread_id") or "",
+            raw_input=row.get("raw_input") or "",
+            intent=row.get("intent") or "",
+            agent=row.get("agent") or "",
+            risk_level=row.get("risk_level") or "low",
+            status=row.get("status") or "running",
+        )
+        self._active_cases[case_id] = case  # re-register for subsequent lookups
+        logging.info("[control] rehydrated case %s from DB (post-restart resume)", case_id)
+        return case
+
+    # -- Error reporting ------------------------------------------------------
+
+    def _report(self, what: str, case_id: str, exc: Exception) -> None:
+        """Surface a control-layer persistence/observability failure.
+
+        Previously these were swallowed at logging.debug, making DB/connectivity
+        problems invisible. Now they log at WARNING with structured context and,
+        if an admin Telegram chat is configured, push a one-line alert.
+        """
+        logging.warning("[control] %s (case=%s): %r", what, case_id, exc)
+        chat_id = os.getenv("TELEGRAM_ADMIN_CHAT_ID", "").strip()
+        if not chat_id:
+            return
+        try:
+            from services.telegram_service import send_message
+            send_message(
+                int(chat_id),
+                f"⚠️ control-layer error: {what} (case={case_id[:8]}): {exc}",
+            )
+        except Exception:
+            pass  # alerting must never crash the agent
 
     def _new_id(self) -> str:
         return uuid.uuid4().hex
@@ -125,7 +190,7 @@ class ControlLayer:
             from db.repository import insert_case
             insert_case(case)
         except Exception as e:
-            logging.debug("[control] begin_case DB write failed: %s", e)
+            self._report("begin_case DB write failed", case.case_id, e)
 
         self._trace(case.case_id, "input_received", "supervisor",
                     {"input_length": len(raw_input), "sender_id": sender_id})
@@ -143,7 +208,7 @@ class ControlLayer:
                         agent=decision.agent,
                         risk_level=decision.risk_level)
         except Exception as e:
-            logging.debug("[control] set_routing DB update failed: %s", e)
+            self._report("set_routing DB update failed", case.case_id, e)
 
         self._trace(case.case_id, "intent_classified", "supervisor", {
             "intent":     decision.intent,
@@ -160,7 +225,10 @@ class ControlLayer:
         final_response: str,
         error_summary: str = "",
     ) -> None:
-        """Close the case with a final outcome."""
+        """Close the case with a final outcome. Idempotent — safe to call twice."""
+        if case.case_id in self._closed_ids:
+            return  # already finalized; avoid double-close / duplicate traces
+
         case.status         = _STATUS_FOR_OUTCOME.get(outcome, "completed")
         case.outcome        = outcome
         case.final_response = final_response
@@ -175,8 +243,9 @@ class ControlLayer:
                         error_summary=error_summary[:500] if error_summary else "",
                         closed_at=datetime.now(timezone.utc).isoformat())
         except Exception as e:
-            logging.debug("[control] close_case DB update failed: %s", e)
+            self._report("close_case DB update failed", case.case_id, e)
 
+        self._closed_ids.add(case.case_id)
         self._active_cases.pop(case.case_id, None)  # free memory after close
 
         self._trace(case.case_id, "output_generated", "invoice_agent", {
@@ -188,6 +257,52 @@ class ControlLayer:
         # Background: synthesize skill facts from completed cases
         if outcome in ("success", "completed"):
             self._synthesize_skills(case)
+
+    def reap_stale_cases(self, max_age_hours: float = 6.0) -> int:
+        """Mark long-running 'running' cases as 'abandoned'.
+
+        Safety net for orphans/zombies that no code path can close: a process
+        killed mid-invoke (gateway except never runs) or a paused interrupt the
+        user never resumed. A legitimate invoice/approval flow never stays open
+        for hours, so anything older than `max_age_hours` is dead.
+
+        Idempotent and best-effort — intended to run at every bot startup and
+        periodically. Returns the number of cases reaped. Does NOT delete rows.
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=max_age_hours)).isoformat()
+        try:
+            from db.repository import list_stale_running_cases, update_case
+            stale = list_stale_running_cases(cutoff)
+        except Exception as e:
+            self._report("reap_stale_cases query failed", "-", e)
+            return 0
+
+        reaped = 0
+        now_iso = datetime.now(timezone.utc).isoformat()
+        for row in stale:
+            cid = row["case_id"]
+            try:
+                update_case(
+                    cid,
+                    status="abandoned",
+                    outcome="abandoned",
+                    error_summary=f"Auto-reaped: still 'running' after {max_age_hours}h "
+                                  "(process kill or unresumed interrupt).",
+                    closed_at=now_iso,
+                )
+                self._closed_ids.add(cid)
+                self._active_cases.pop(cid, None)
+                self._trace(cid, "failure", "control", {
+                    "reason": "stale_case_reaped",
+                    "max_age_hours": max_age_hours,
+                }, error="auto-abandoned by reaper")
+                reaped += 1
+            except Exception as e:
+                self._report("reap_stale_cases update failed", cid, e)
+
+        if reaped:
+            logging.warning("[control] reaped %d stale 'running' case(s) → abandoned", reaped)
+        return reaped
 
     # -- Trace logging --------------------------------------------------------
 
@@ -214,7 +329,7 @@ class ControlLayer:
             from db.repository import insert_trace_event
             insert_trace_event(event)
         except Exception as e:
-            logging.debug("[control] trace write failed: %s", e)
+            self._report(f"trace write failed ({event_type})", case_id, e)
 
     def log_tool_call(
         self,
@@ -296,7 +411,7 @@ class ControlLayer:
             from db.repository import insert_failure_label
             insert_failure_label(label)
         except Exception as e:
-            logging.debug("[control] label_failure DB write failed: %s", e)
+            self._report("label_failure DB write failed", case.case_id, e)
 
         self._trace(case.case_id, "failure", "guardrail", {
             "failure_type": failure_type,
@@ -306,9 +421,6 @@ class ControlLayer:
 
         logging.warning("[control] FAILURE case=%s type=%s severity=%s source=%s",
                         case.case_id, failure_type, severity, source)
-
-        # Async patch proposal — fires in background, never blocks the agent
-        self._trigger_patch_proposal(label, case)
 
         return label
 
@@ -322,26 +434,6 @@ class ControlLayer:
                 skill_service.synthesize_from_case(case, user_id=case.user_id)
             except Exception as e:
                 logging.debug("[control] skill synthesis failed: %s", e)
-
-        t = threading.Thread(target=_run, daemon=True)
-        t.start()
-
-    def _trigger_patch_proposal(self, failure: FailureLabel, case: Case) -> None:
-        """Background: ask the LLM to propose a fix for this failure.
-
-        Low/medium severity → propose + auto-apply (if evals pass).
-        High/critical       → propose only, write to db/patches/ for human review.
-        """
-        import threading
-
-        def _run():
-            try:
-                from services.patch_service import patch_service
-                proposal = patch_service.propose(failure, case)
-                if proposal and failure.severity in ("low", "medium"):
-                    patch_service.apply_and_verify(proposal)
-            except Exception as e:
-                logging.debug("[control] patch proposal failed: %s", e)
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()

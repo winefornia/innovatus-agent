@@ -1409,9 +1409,26 @@ def _make_checkpointer():
             sep = "&" if "?" in conninfo else "?"
             conninfo = f"{conninfo}{sep}sslmode=require"
 
+        # Pool sizing/health is the difference between a stable bot and the
+        # "couldn't get a connection after 30.00 sec" / "SSL SYSCALL error:
+        # Operation timed out" failures seen in production:
+        #   - check=check_connection  → validate (and discard) a connection
+        #     before handing it out, so Supabase/pgBouncer-killed idle sockets
+        #     never reach the agent as a dead connection.
+        #   - max_idle / max_lifetime → proactively recycle connections the
+        #     pooler would otherwise reap server-side and leave us holding.
+        #   - timeout=10              → fail fast instead of hanging 30s when
+        #     the pool is genuinely exhausted (surfaces the real problem).
+        #   - max_size=10             → a single bot never needs 20; a smaller
+        #     ceiling stays well under Supabase pooler client limits.
         pool = ConnectionPool(
             conninfo=conninfo,
-            max_size=20,
+            min_size=1,
+            max_size=10,
+            timeout=10.0,            # max wait for a free connection (was 30s default)
+            max_idle=300.0,          # close connections idle > 5 min
+            max_lifetime=1800.0,     # recycle every 30 min (beat pooler idle-kill)
+            check=ConnectionPool.check_connection,  # validate before handing out
             kwargs={
                 "autocommit": True,
                 "prepare_threshold": 0,   # pgBouncer transaction mode compat
@@ -1423,7 +1440,10 @@ def _make_checkpointer():
         checkpointer = PostgresSaver(pool)
         checkpointer.setup()   # Creates langgraph_checkpoints / writes tables (idempotent)
 
-        logging.info("[checkpointer] Connected to Postgres via pgBouncer — conversations are persistent")
+        logging.info(
+            "[checkpointer] Connected to Postgres via pgBouncer "
+            "(pool min=1 max=10, check+recycle enabled) — conversations are persistent"
+        )
         return checkpointer
 
     except Exception as exc:

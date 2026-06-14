@@ -128,7 +128,6 @@ winefornia-agent/
     product_service.py      # product search + deterministic pricing
     gmail_service.py        # Gmail OAuth: intake labels, send receipt
     pdf_service.py          # PDF → text extraction
-    patch_service.py        # LLM auto-propose + apply fixes for low-severity failures
     tastingroom_service.py  # tasting room reservation logic
     tastingroom_mailbox.py  # Gmail poll for tasting room emails → case_desk_graph
   db/
@@ -251,7 +250,7 @@ Shipping waived for orders over $1,500.
 
 ## Observability
 
-Every agent run opens a `Case` in Supabase `agent_cases`. All LLM calls, tool calls, interrupts, and human decisions are written to `trace_events`. Production failures are labeled in `failure_labels` and trigger a background LLM patch proposal via `services/patch_service.py`. Eval cases in `db/eval_cases/` guard against regressions.
+Every agent run opens a `Case` in Supabase `agent_cases`. All LLM calls, tool calls, interrupts, and human decisions are written to `trace_events`. Production failures are labeled in `failure_labels` for human review. Eval cases in `db/eval_cases/` guard against regressions.
 
 ## Deployment (Fly.io)
 

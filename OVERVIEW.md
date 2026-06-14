@@ -120,9 +120,8 @@ Both share one core design philosophy: **a deterministic brain owns every real-w
 **Control, safety & observability**
 | Module | Role |
 |---|---|
-| `control_layer.py` | Case lifecycle supervisor: opens a Case, traces input/intent/output/tool calls/interrupts/decisions/failures, synthesizes skills, triggers patch proposals, creates eval cases from failures. |
+| `control_layer.py` | Case lifecycle supervisor: opens a Case, traces input/intent/output/tool calls/interrupts/decisions/failures, synthesizes skills, creates eval cases from failures. |
 | `guardrail_service.py` | Deterministic (never LLM) pre/post checks: input length, prompt injection, rate limit, amount sanity, tier/schedule validation, error keys, credential-leak detection. |
-| `patch_service.py` | LLM auto-fix loop: Claude Sonnet reads failure context + source → proposes patches; low/medium severity auto-apply with eval verification; high severity queued for human. |
 | `activity_service.py` | Formats activity for operators (Telegram history + HTML activity page) in Pacific time. |
 | `tool_registry.py` | Business-action router with validation, **risk labels**, hooks, and error normalization for Square/Gmail/Supabase/customer/pricing tools (plus a separate tasting-room registry). |
 
@@ -130,7 +129,7 @@ Both share one core design philosophy: **a deterministic brain owns every real-w
 | File | Role |
 |---|---|
 | `main.py` | FastAPI server: `/intake`, `/intake/pdf`, `/webhooks/email`, `/webhooks/gmail/poll`, `/webhooks/gmail/tastingroom/poll`, `/webhooks/google-chat`, `/invoices/recent`, `/reservations/recent`, `/activity`, `/health`. |
-| `config.py` | Env var loader (API keys, tokens, Supabase, Mem0, safe-mode/prod flags, patch auto-apply, authorized accounts). |
+| `config.py` | Env var loader (API keys, tokens, Supabase, Mem0, safe-mode/prod flags, authorized accounts). |
 | `schemas.py` | Pydantic models: `LineItem`, `InvoiceDraft`. |
 | `adapters/google_chat_adapter.py` | Google Chat front-end mirroring the Telegram invoice bot (cards, wizards, stale-click guards). |
 | `static/index.html` | Activity dashboard stub (wine-red theme). |
@@ -197,10 +196,9 @@ LangGraph · Claude API (Haiku for extraction/composition, Sonnet for judgment/p
 - **Access control** — Telegram bots restricted to authorized chats/users; Google Chat restricted to an allowed email list.
 - **Reconciliation alerts** — if Square succeeds but the database write fails, the case is flagged for manual review rather than silently lost.
 
-## D. Observability & Self-Improvement
+## D. Observability
 - **Full audit trail** — every run opens a "case"; every LLM call, tool call, interrupt, and human decision is logged to the database.
-- **Failure labeling** — production failures are categorized by type, severity, and responsible layer.
-- **Self-healing patch proposals** — low/medium-severity failures trigger an AI-proposed code patch that is auto-applied only after passing the eval suite; high-severity issues are queued for human review.
+- **Failure labeling** — production failures are categorized by type, severity, and responsible layer for human review.
 - **Regression eval suite** — golden, edge-case, regression, and adversarial scenarios guard against regressions; production failures can become new eval cases.
 - **Activity dashboard** — operators review recent invoices and reservations via Telegram history and a web page, in Pacific time.
 

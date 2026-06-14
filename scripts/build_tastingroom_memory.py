@@ -21,7 +21,7 @@ if str(ROOT) not in sys.path:
 os.environ.setdefault("TELEGRAM_APPROVAL_CHAT_ID", "")
 os.environ.setdefault("POSTGRES_CONNECTION_STRING", "")
 
-from agents.tastingroom_graph import tastingroom_graph
+from agents.case_desk_graph import case_desk_graph
 from services.gmail_service import _decode_body, _get_service
 import services.tastingroom_service as tastingroom_service
 
@@ -45,9 +45,8 @@ def main() -> None:
 
     if args.no_llm:
         tastingroom_service.llm_extract_email = lambda *a, **k: {}
-        tastingroom_service.plan_next_action_from_timeline = lambda reservation, **k: {
-            "recommended_action": k.get("fallback_action") or ""
-        }
+        import services.case_judge as case_judge
+        case_judge.judge_case = lambda **k: case_judge._fallback_judgment("no-llm mode")
 
     try:
         service = _get_service()
@@ -80,7 +79,7 @@ def main() -> None:
                 print(" ", msg["id"], msg_type, facts.get("client_name"), facts.get("requested_date"), facts.get("guest_count"))
                 continue
             raw_email = f"Subject: {subject}\nFrom: {sender}\nTo: {to_email}\n\n{body}"
-            out = tastingroom_graph.invoke(
+            out = case_desk_graph.invoke(
                 {
                     "raw_email": raw_email,
                     "sender_id": sender,

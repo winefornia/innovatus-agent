@@ -55,6 +55,8 @@ class CaseDeskState(TypedDict, total=False):
 
     # --- output ---
     action_id: str
+    current_state: str
+    recommended_action: str
     final_response: str
     error: str
 
@@ -354,15 +356,19 @@ def update_reservation_cache(state: CaseDeskState) -> CaseDeskState:
             recommended_action=mapped_action,
             confidence=judgment.confidence,
         )
-        # Reflect in the in-memory reservation dict too.
+        # Surface derived state top-level and on the in-memory reservation dict.
+        out: CaseDeskState = {
+            "current_state": derived_state,
+            "recommended_action": mapped_action,
+        }
         reservation_data = state.get("_reservation", {})
         if reservation_data:
-            reservation_data = {
+            out["_reservation"] = {
                 **reservation_data,
                 "current_state": derived_state,
                 "recommended_action": mapped_action,
             }
-            return {"_reservation": reservation_data}
+        return out
     except Exception as exc:
         logger.exception("update_reservation_cache failed: %s", exc)
     return {}
@@ -403,10 +409,11 @@ def validate_and_act(state: CaseDeskState) -> CaseDeskState:
     except Exception as exc:
         logger.exception("validate_and_act: could not parse judgment: %s", exc)
         return {
+            "action_id": "",
             "final_response": (
                 f"Reservation {reservation_id} processed.\n"
                 "Judgment parse failed — flagged for staff review."
-            )
+            ),
         }
 
     allowed, reason = validate_plan(judgment)
@@ -478,6 +485,7 @@ def validate_and_act(state: CaseDeskState) -> CaseDeskState:
         )
         return {
             "_validation_result_id": val_record.result_id,
+            "action_id": "",
             "final_response": "\n".join(summary_lines),
         }
 

@@ -87,7 +87,3 @@ ACTIVITY_API_KEY = os.getenv("ACTIVITY_API_KEY", "")
 # Production mode — when True, unsafe fallbacks (MemorySaver, etc.) are disabled.
 # Set PRODUCTION_MODE=true in production; leave unset or false for local dev.
 PRODUCTION_MODE = os.getenv("PRODUCTION_MODE", "false").lower() in ("1", "true", "yes", "on")
-
-# Patch auto-apply — when True, low/medium patches are applied automatically.
-# DISABLED by default. Enable only in dev/staging with explicit review.
-PATCH_AUTO_APPLY = os.getenv("PATCH_AUTO_APPLY", "false").lower() in ("1", "true", "yes", "on")

@@ -167,6 +167,15 @@ async def run() -> None:
     print("   Mode: long polling")
     print("   Press Ctrl+C to stop\n")
 
+    # Startup reconciliation of orphaned 'running' cases (global, idempotent).
+    try:
+        from services.control_layer import control
+        n = control.reap_stale_cases()
+        if n:
+            print(f"   Reaped {n} stale case(s) from previous run ✓")
+    except Exception as e:
+        print(f"[startup reaper error] {e}")
+
     offset = 0
     async with httpx.AsyncClient(timeout=40) as client:
         await _delete_webhook(client)

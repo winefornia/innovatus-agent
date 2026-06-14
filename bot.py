@@ -445,11 +445,33 @@ async def _delete_webhook(client: httpx.AsyncClient) -> None:
         print("   Webhook cleared ✓")
 
 
+async def _reaper_loop() -> None:
+    """Periodically abandon stale 'running' cases left by kills/unresumed interrupts."""
+    from services.control_layer import control
+    while True:
+        try:
+            control.reap_stale_cases()
+        except Exception as e:
+            print(f"[reaper error] {e}")
+        await asyncio.sleep(3600)   # hourly
+
+
 async def run() -> None:
     print("🍷 Winefornia Invoice Bot")
     print("   Bot:  @FireHorse00_bot")
     print("   Mode: long polling  (no public URL needed)")
     print("   Press Ctrl+C to stop\n")
+
+    # Startup reconciliation: any case still 'running' from a previous process
+    # (killed mid-invoke, or a paused interrupt no one resumed) is now an orphan.
+    from services.control_layer import control
+    try:
+        n = control.reap_stale_cases()
+        if n:
+            print(f"   Reaped {n} stale case(s) from previous run ✓")
+    except Exception as e:
+        print(f"[startup reaper error] {e}")
+    asyncio.create_task(_reaper_loop())   # keep reaping hourly
 
     offset = 0
     async with httpx.AsyncClient(timeout=40) as client:
