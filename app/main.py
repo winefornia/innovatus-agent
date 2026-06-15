@@ -255,10 +255,16 @@ def recent_reservations(limit: int = 20):
 #   "enforce"           — reject unverified requests with 401.
 #   "off"               — skip entirely.
 # Audience check is applied only when GOOGLE_CHAT_PROJECT_NUMBER is set.
-_CHAT_ISSUER = "chat@system.gserviceaccount.com"
-_CHAT_CERTS_URL = (
-    "https://www.googleapis.com/service_accounts/v1/metadata/x509/"
-    "chat@system.gserviceaccount.com"
+# Workspace Add-on webhooks carry a standard Google ID token:
+#   iss   = https://accounts.google.com
+#   aud   = the webhook endpoint URL
+#   email = the add-on's gcp-sa-gsuiteaddons service agent (binds it to our project)
+_CHAT_AUDIENCE = os.getenv(
+    "GOOGLE_CHAT_AUDIENCE", "https://winefornia-agent.fly.dev/webhooks/google-chat"
+)
+_CHAT_SIGNER_EMAIL = os.getenv(
+    "GOOGLE_CHAT_SIGNER_EMAIL",
+    "service-338702309220@gcp-sa-gsuiteaddons.iam.gserviceaccount.com",
 )
 
 
@@ -280,23 +286,22 @@ def _verify_google_chat_token(auth_header: str) -> tuple[bool, str]:
     if not auth_header or not auth_header.lower().startswith("bearer "):
         return False, "no bearer token"
     token = auth_header.split(" ", 1)[1].strip()
-    audience = os.getenv("GOOGLE_CHAT_PROJECT_NUMBER") or None
     try:
         from google.oauth2 import id_token
         from google.auth.transport import requests as g_requests
-        claims = id_token.verify_token(
-            token, g_requests.Request(), audience=audience, certs_url=_CHAT_CERTS_URL
+        # verify_oauth2_token validates the signature against Google's standard
+        # certs, that iss is accounts.google.com, expiry, and aud == audience.
+        claims = id_token.verify_oauth2_token(
+            token, g_requests.Request(), audience=_CHAT_AUDIENCE
         )
     except Exception as e:
-        # Diagnostic: show what the token actually claims so we can point at the
-        # right issuer/certs/audience (observe mode only).
         c = _peek_jwt_claims(token)
         return False, (f"verify failed: {e} | unverified iss={c.get('iss')!r} "
                        f"aud={c.get('aud')!r} email={c.get('email')!r}")
-    if claims.get("iss") != _CHAT_ISSUER:
-        return False, f"bad issuer: {claims.get('iss')!r}"
-    aud_note = "aud-checked" if audience else "aud-unchecked(no project number)"
-    return True, f"ok ({aud_note})"
+    # Bind to OUR add-on: the token must be signed by our project's add-on SA.
+    if claims.get("email") != _CHAT_SIGNER_EMAIL or not claims.get("email_verified", False):
+        return False, f"unexpected signer: {claims.get('email')!r}"
+    return True, "ok (addon JWT: aud + signer verified)"
 
 
 @app.post("/webhooks/google-chat")
