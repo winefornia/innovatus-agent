@@ -12,7 +12,9 @@ Endpoints:
   GET  /health                  — health check
 """
 
+import asyncio
 import logging
+import os
 import uuid
 from typing import Optional
 
@@ -241,14 +243,64 @@ def recent_reservations(limit: int = 20):
         return {"reservations": [], "error": str(e)}
 
 
+# ── Google Chat webhook authentication ───────────────────────────────────────
+# Google signs every webhook with a JWT (Authorization: Bearer …) issued by
+# chat@system.gserviceaccount.com, with audience = your GCP project number.
+# We verify signature + issuer (+ audience when configured) so forged POSTs are
+# rejected.
+#
+# Rollout via GCHAT_VERIFY:
+#   "observe" (default) — verify + log pass/fail, but STILL process (safe to
+#                         deploy live; can't lock out real traffic).
+#   "enforce"           — reject unverified requests with 401.
+#   "off"               — skip entirely.
+# Audience check is applied only when GOOGLE_CHAT_PROJECT_NUMBER is set.
+_CHAT_ISSUER = "chat@system.gserviceaccount.com"
+_CHAT_CERTS_URL = (
+    "https://www.googleapis.com/service_accounts/v1/metadata/x509/"
+    "chat@system.gserviceaccount.com"
+)
+
+
+def _verify_google_chat_token(auth_header: str) -> tuple[bool, str]:
+    """Return (ok, reason). Verifies the Google Chat Bearer JWT (sync — call via
+    a thread)."""
+    if not auth_header or not auth_header.lower().startswith("bearer "):
+        return False, "no bearer token"
+    token = auth_header.split(" ", 1)[1].strip()
+    audience = os.getenv("GOOGLE_CHAT_PROJECT_NUMBER") or None
+    try:
+        from google.oauth2 import id_token
+        from google.auth.transport import requests as g_requests
+        claims = id_token.verify_token(
+            token, g_requests.Request(), audience=audience, certs_url=_CHAT_CERTS_URL
+        )
+    except Exception as e:
+        return False, f"verify failed: {e}"
+    if claims.get("iss") != _CHAT_ISSUER:
+        return False, f"bad issuer: {claims.get('iss')!r}"
+    aud_note = "aud-checked" if audience else "aud-unchecked(no project number)"
+    return True, f"ok ({aud_note})"
+
+
 @app.post("/webhooks/google-chat")
 async def google_chat_webhook(request: Request):
+    _log = logging.getLogger("winefornia.main")
+    mode = (os.getenv("GCHAT_VERIFY", "observe") or "observe").lower()
+
+    if mode != "off":
+        ok, reason = await asyncio.to_thread(
+            _verify_google_chat_token, request.headers.get("authorization", "")
+        )
+        _log.info("[gc:auth] %s — %s (mode=%s)", "ok" if ok else "FAILED", reason, mode)
+        if mode == "enforce" and not ok:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+
     event = await request.json()
     # Diagnostic: surface the raw event shape so we can tell why messages
     # may not be routed (legacy vs newer Chat payload formats).
     try:
-        import logging as _lg
-        _lg.getLogger("winefornia.main").info(
+        _log.info(
             "[gc:webhook:raw] type=%r top_keys=%s msg_keys=%s chat_keys=%s",
             event.get("type"),
             list(event.keys()),
