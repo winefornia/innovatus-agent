@@ -271,7 +271,11 @@ def extract_invoice_fields(state: InvoiceState) -> InvoiceState:
             "sauv blanc/sb→Sauvignon Blanc, zin→Zinfandel\n"
             "    vintage: year as INTEGER (e.g. 2022), null if not specified — never a string\n"
             "    quantity: INTEGER\n"
-            "    unit_type: MUST be exactly 'case' or 'bottle' (singular, never plural) — default 'case' for wholesale\n\n"
+            "    unit_type: MUST be exactly 'case' or 'bottle' (singular, never plural) — default 'case' for wholesale\n"
+            "    unit_price: the price charged per ONE unit_type as stated in the source, as a NUMBER in dollars "
+            "(e.g. 714.00). If the source shows a line total for multiple units, divide by quantity to get the "
+            "per-unit price. If both a retail/list/MSRP and an actual charged/cost price are shown, use the "
+            "CHARGED/cost price. null if no price is stated in the source.\n\n"
             "Also return:\n"
             "  confidence: float 0.0–1.0 — your extraction confidence. Lower if customer is first-name only, "
             "items are vague, quantities unclear, or the message references 'same as last time' / 'usual'.\n"
@@ -736,9 +740,9 @@ def confirm_item_prices(state: InvoiceState) -> InvoiceState:
         "type": "price_confirmation",
         "item": label,
         "question": (
-            f"“{label}” has variable pricing with no list price on file. "
-            f"What MSRP (list) price per bottle should I use? Reply with the amount "
-            f"(e.g. 45 or $45.00)" + (f" — the {tier} tier discount still applies." if tier else ".")
+            f"I don't have a price on file for “{label}”, and none was stated in the order. "
+            f"What price per bottle should I charge? Reply with the amount (e.g. 45 or $45.00) — "
+            f"I'll use it as-is on the invoice."
         ),
     })
 

@@ -194,11 +194,9 @@ def render(state: dict, space_id: str, *, is_card_click: bool = False) -> dict:
         if not question:
             pending = state.get("awaiting_price") or []
             label = (pending[0].get("label") if pending else "") or "an item"
-            tier = state.get("tier_name", "")
-            question = (f"“{label}” has variable pricing with no list price on file.\n\n"
-                        f"What MSRP (list) price per bottle should I use? Reply with the amount "
-                        f"(e.g. 45 or $45.00)")
-            question += f" — the {tier} tier discount still applies." if tier else "."
+            question = (f"I don't have a price on file for “{label}”, and none was stated in the order.\n\n"
+                        f"What price per bottle should I charge? Reply with the amount "
+                        f"(e.g. 45 or $45.00) — I'll use it as-is.")
         return _text(question, is_card_click=is_card_click)
 
     elif ix == "confirm_customer":

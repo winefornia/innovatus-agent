@@ -177,6 +177,31 @@ def search_product_catalog(query: str, vintage: Optional[int] = None) -> dict:
     }
 
 
+def _stated_bottle_cents(item: dict, bottles_per_case: int) -> int | None:
+    """Per-bottle price (cents) explicitly provided for this item, else None.
+
+    Sources, in order: operator-confirmed price (manual_price_cents, per bottle),
+    then a price stated in the source PDF/text (unit_price, per the item's
+    unit_type). Both are treated as the final price — no tier discount.
+    """
+    manual = item.get("manual_price_cents")
+    if manual is not None:
+        try:
+            return int(manual)
+        except (TypeError, ValueError):
+            return None
+    unit_price = item.get("unit_price")
+    if unit_price in (None, "", 0):
+        return None
+    try:
+        cents = int(round(float(unit_price) * 100))
+    except (TypeError, ValueError):
+        return None
+    if item.get("unit_type", "bottle") == "case" and bottles_per_case:
+        return round(cents / bottles_per_case)
+    return cents
+
+
 def calculate_invoice_prices(
     tier_name: str,
     items: list[dict],
@@ -224,23 +249,42 @@ def calculate_invoice_prices(
             item.get("size"),
         )
 
-        if product is None:
-            blocks.append(f"Product not found: {item.get('product_name', '?')} {item.get('vintage', '')}")
+        quantity         = item.get("quantity", 1)
+        unit_type        = item.get("unit_type", "bottle")
+        bottles_per_case = (product or {}).get("bottles_per_case", 12)
+        bottle_count     = quantity * bottles_per_case if unit_type == "case" else quantity
+        disp_name        = (product or {}).get("name") or item.get("product_name") or "Item"
+        disp_vintage     = (product or {}).get("vintage", item.get("vintage"))
+        disp_size        = (product or {}).get("size", "750ml")
+
+        # PRIORITY 1 — a price stated in the source (PDF/text) or confirmed by the
+        # operator is authoritative and used AS-IS (no tier discount applied).
+        stated_bottle = _stated_bottle_cents(item, bottles_per_case)
+        if stated_bottle is not None:
+            line_total = stated_bottle * bottle_count
+            li = LineItem(
+                product_name=disp_name, vintage=disp_vintage, size=disp_size,
+                quantity=quantity, unit_type=unit_type,
+                base_unit_price_cents=stated_bottle,   # base == final → no discount
+                discount_percent=0,
+                final_unit_price_cents=stated_bottle,
+                line_total_cents=line_total,
+                bottles_per_case=bottles_per_case,
+            )
+            line_items.append(li.model_dump())
             continue
 
-        if product.get("variable_pricing") and product.get("msrp_bottle_cents") is None:
-            # Operator can confirm a per-bottle list price in-thread; once set we
-            # price it like any catalog item (tier multiplier still applies).
-            manual_cents = item.get("manual_price_cents")
-            if manual_cents is None:
-                needs_price.append({
-                    "item_index": idx,   # robust pointer back to extracted item
-                    "product_name": product["name"],
-                    "vintage": product.get("vintage"),
-                    "label": f"{product['name']} {product.get('vintage') or ''}".strip(),
-                })
-                continue
-            product = {**product, "msrp_bottle_cents": int(manual_cents)}
+        # PRIORITY 2/3 — no stated price: look up the catalog.
+        # Unknown product, or variable-pricing with no MSRP → ask the operator
+        # to confirm a price (in-thread), rather than guessing or hard-failing.
+        if product is None or (product.get("variable_pricing") and product.get("msrp_bottle_cents") is None):
+            needs_price.append({
+                "item_index": idx,   # robust pointer back to extracted item
+                "product_name": disp_name,
+                "vintage": disp_vintage,
+                "label": f"{disp_name} {disp_vintage or ''}".strip(),
+            })
+            continue
 
         if tier_name in product.get("tier_unavailable", []):
             blocks.append(
@@ -248,16 +292,8 @@ def calculate_invoice_prices(
             )
             continue
 
+        # PRIORITY 2 — catalog MSRP × tier multiplier.
         msrp_cents = product["msrp_bottle_cents"]
-        quantity = item.get("quantity", 1)
-        unit_type = item.get("unit_type", "bottle")
-        bottles_per_case = product.get("bottles_per_case", 12)
-
-        if unit_type == "case":
-            bottle_count = quantity * bottles_per_case
-        else:
-            bottle_count = quantity
-
         # round() avoids int(19500 * 0.7) = 13649 floating-point truncation bug
         final_unit_price = round(msrp_cents * multiplier)
         line_total = round(final_unit_price * bottle_count)
