@@ -548,16 +548,25 @@ async def _handle_message(event: dict, space_id: str, thread_id: str, config: di
 
     # A typed reply to a pending text-input interrupt CONTINUES the current
     # invoice. A new PDF never continues — it's always a fresh invoice.
+    pending_ix = None
     if not is_new_pdf:
         try:
             snapshot = invoice_graph.get_state(config)
-            ix = which(snapshot.values) if snapshot and snapshot.next else None
-            if ix in ("missing", "edit_instruction", "edit_clarification", "price_confirmation"):
-                log.info("[gc:message] resuming %s interrupt space=%s", ix, space_id)
-                result = invoice_graph.invoke(Command(resume=text), config=config)
-                return render(result, space_id)
-        except Exception:
-            pass
+            pending_ix = which(snapshot.values) if snapshot and snapshot.next else None
+        except Exception as e:
+            log.error("[gc:message] get_state failed: %s", e)
+
+    if pending_ix in ("missing", "edit_instruction", "edit_clarification", "price_confirmation"):
+        # We are mid-invoice waiting on this reply — resume, do NOT fall through
+        # to a fresh run (a resume error must surface, not silently restart).
+        log.info("[gc:message] resuming %s interrupt space=%s", pending_ix, space_id)
+        try:
+            result = invoice_graph.invoke(Command(resume=text), config=config)
+            return render(result, space_id)
+        except Exception as e:
+            log.error("[gc:message] resume failed (%s): %s", pending_ix, e, exc_info=True)
+            return _text(f"Sorry — I hit an error continuing that step: {e}\n\nPlease try again.",
+                         is_card_click=False)
 
     # New request (new PDF, new order, or a message after the prior invoice
     # ended). Wipe any leftover state so this invoice starts from a clean slate.
