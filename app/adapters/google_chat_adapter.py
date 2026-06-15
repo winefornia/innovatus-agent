@@ -23,7 +23,11 @@ import httpx
 from langgraph.types import Command
 from agents.invoice_graph import invoice_graph, checkpointer
 from services.gateway import NormalizedMessage, gateway
-from services.invoice_interrupts import current_invoice_interrupt as which
+from services.invoice_interrupts import (
+    current_invoice_interrupt as which,
+    interrupt_payload,
+    TEXT_INPUT_INTERRUPTS,
+)
 
 log = logging.getLogger(__name__)
 
@@ -174,21 +178,28 @@ def _methods_card(sched: str) -> dict:
 def render(state: dict, space_id: str, *, is_card_click: bool = False) -> dict:
     """Build the Google Chat response JSON based on current graph interrupt."""
     ix = which(state)
+    payload = interrupt_payload(state) or {}
 
     if ix == "missing":
-        fields = state.get("missing_fields", [])
-        return _text("I need a bit more info. Please provide:\n• " + "\n• ".join(fields),
-                      is_card_click=is_card_click)
+        # Prefer the graph's focused LLM question; fall back to the field list.
+        question = payload.get("question")
+        if not question:
+            fields = state.get("missing_fields", [])
+            question = ("I need a bit more info. Please provide:\n• " + "\n• ".join(fields)
+                        if fields else "Could you share a bit more detail on this order?")
+        return _text(question, is_card_click=is_card_click)
 
     elif ix == "price_confirmation":
-        pending = state.get("awaiting_price") or []
-        label = (pending[0].get("label") if pending else "") or "an item"
-        tier = state.get("tier_name", "")
-        msg = (f"“{label}” has variable pricing with no list price on file.\n\n"
-               f"What MSRP (list) price per bottle should I use? Reply with the amount "
-               f"(e.g. 45 or $45.00)")
-        msg += f" — the {tier} tier discount still applies." if tier else "."
-        return _text(msg, is_card_click=is_card_click)
+        question = payload.get("question")
+        if not question:
+            pending = state.get("awaiting_price") or []
+            label = (pending[0].get("label") if pending else "") or "an item"
+            tier = state.get("tier_name", "")
+            question = (f"“{label}” has variable pricing with no list price on file.\n\n"
+                        f"What MSRP (list) price per bottle should I use? Reply with the amount "
+                        f"(e.g. 45 or $45.00)")
+            question += f" — the {tier} tier discount still applies." if tier else "."
+        return _text(question, is_card_click=is_card_click)
 
     elif ix == "confirm_customer":
         c = state.get("customer", {})
@@ -552,11 +563,11 @@ async def _handle_message(event: dict, space_id: str, thread_id: str, config: di
     if not is_new_pdf:
         try:
             snapshot = invoice_graph.get_state(config)
-            pending_ix = which(snapshot.values) if snapshot and snapshot.next else None
+            pending_ix = which(snapshot) if snapshot and snapshot.next else None
         except Exception as e:
             log.error("[gc:message] get_state failed: %s", e)
 
-    if pending_ix in ("missing", "edit_instruction", "edit_clarification", "price_confirmation"):
+    if pending_ix in TEXT_INPUT_INTERRUPTS:
         # We are mid-invoice waiting on this reply — resume, do NOT fall through
         # to a fresh run (a resume error must surface, not silently restart).
         log.info("[gc:message] resuming %s interrupt space=%s", pending_ix, space_id)
@@ -647,7 +658,7 @@ async def _handle_card_clicked(event: dict, space_id: str, thread_id: str, confi
     if action_name in _VALID_AT:
         try:
             snapshot = invoice_graph.get_state(config)
-            ix = which(snapshot.values) if snapshot else None
+            ix = which(snapshot) if snapshot else None
         except Exception:
             ix = None
         log.info("[gc:click] action=%r current_interrupt=%r valid_at=%s",
