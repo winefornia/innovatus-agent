@@ -90,6 +90,7 @@ class InvoiceState(TypedDict, total=False):
     # Pricing
     line_items: list[dict[str, Any]]
     pricing_result: dict[str, Any]  # full output of calculate_invoice_prices
+    awaiting_price: Any             # variable-pricing items pending operator price (interrupt)
 
     # Invoice preview
     invoice_preview: dict[str, Any]
@@ -690,19 +691,70 @@ def resolve_products_and_prices(state: InvoiceState) -> InvoiceState:
 
     result = calculate_invoice_prices(tier_name, items)
 
-    if result["blocks"]:
-        return {
-            "pricing_result": result,
-            "line_items": result["line_items"],
-            "final_response": (
-                "Could not price some items:\n" + "\n".join(f"  - {b}" for b in result["blocks"])
-            ),
-        }
-
-    return {
+    out: InvoiceState = {
         "pricing_result": result,
         "line_items": result["line_items"],
+        # Set the flag the control/UI layer reads to detect a price-confirmation
+        # checkpoint. Cleared once every variable-priced item has a price.
+        "awaiting_price": result.get("needs_price") or None,
     }
+
+    # Hard blocks (product not found, tier unavailable, …) are unrecoverable —
+    # surface them and stop. Variable-pricing items are NOT blocks: they route to
+    # confirm_item_prices to ask the operator (see _route_after_pricing).
+    if result["blocks"]:
+        out["final_response"] = (
+            "Could not price some items:\n" + "\n".join(f"  - {b}" for b in result["blocks"])
+        )
+    return out
+
+
+def _parse_price_to_cents(text) -> int | None:
+    """Parse an operator's typed price ('45', '$45', '45.00', '1,250') to cents."""
+    if text is None:
+        return None
+    import re as _re
+    m = _re.search(r"(\d+(?:\.\d{1,2})?)", str(text).replace(",", ""))
+    if not m:
+        return None
+    return int(round(float(m.group(1)) * 100))
+
+
+def confirm_item_prices(state: InvoiceState) -> InvoiceState:
+    """Interrupt to ask the operator for a per-bottle price on a variable-pricing
+    item, then attach it to the matching extracted item and re-price."""
+    needs = (state.get("pricing_result", {}) or {}).get("needs_price", []) or []
+    if not needs:
+        return {"awaiting_price": None}
+
+    target = needs[0]
+    label = target.get("label") or target.get("product_name") or "this item"
+    tier = state.get("tier_name", "")
+
+    response = interrupt({
+        "type": "price_confirmation",
+        "item": label,
+        "question": (
+            f"“{label}” has variable pricing with no list price on file. "
+            f"What MSRP (list) price per bottle should I use? Reply with the amount "
+            f"(e.g. 45 or $45.00)" + (f" — the {tier} tier discount still applies." if tier else ".")
+        ),
+    })
+
+    cents = _parse_price_to_cents(response)
+    extracted = dict(state.get("extracted", {}) or {})
+    items = list(extracted.get("items", []) or [])
+    if cents is not None:
+        pn = (target.get("product_name") or "").lower()
+        vt = str(target.get("vintage"))
+        for it in items:
+            if it.get("product_name", "").lower() == pn and str(it.get("vintage")) == vt:
+                it["manual_price_cents"] = cents
+                break
+    extracted["items"] = items
+    # Clear the flag; resolve_products_and_prices will re-set it if another
+    # variable-priced item still needs a price (loops until all are priced).
+    return {"extracted": extracted, "awaiting_price": None}
 
 
 def create_invoice_preview(state: InvoiceState) -> InvoiceState:
@@ -1252,8 +1304,11 @@ def _route_after_email_offer(state: InvoiceState) -> str:
 
 
 def _route_after_pricing(state: InvoiceState) -> str:
-    if state.get("pricing_result", {}).get("blocks"):
+    pr = state.get("pricing_result", {}) or {}
+    if pr.get("blocks"):
         return "respond"
+    if pr.get("needs_price"):
+        return "confirm_item_prices"   # ask the operator for a price, then re-price
     return "create_invoice_preview"
 
 
@@ -1289,6 +1344,7 @@ def build_invoice_graph(checkpointer=None):
     g.add_node("clarify_customer_match", clarify_customer_match)
     g.add_node("confirm_tier_and_payment", confirm_tier_and_payment)
     g.add_node("resolve_products_and_prices", resolve_products_and_prices)
+    g.add_node("confirm_item_prices", confirm_item_prices)
     g.add_node("create_invoice_preview", create_invoice_preview)
     g.add_node("approval_gate", approval_gate)
     g.add_node("interpret_edit", interpret_edit)
@@ -1327,8 +1383,14 @@ def build_invoice_graph(checkpointer=None):
     g.add_conditional_edges(
         "resolve_products_and_prices",
         _route_after_pricing,
-        {"create_invoice_preview": "create_invoice_preview", "respond": "respond"},
+        {
+            "create_invoice_preview": "create_invoice_preview",
+            "confirm_item_prices": "confirm_item_prices",
+            "respond": "respond",
+        },
     )
+    # After the operator confirms a price, re-price (loops until all priced).
+    g.add_edge("confirm_item_prices", "resolve_products_and_prices")
     g.add_edge("create_invoice_preview", "approval_gate")
     g.add_conditional_edges(
         "approval_gate",

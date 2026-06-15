@@ -212,6 +212,7 @@ def calculate_invoice_prices(
     line_items: list[dict] = []
     warnings: list[str] = []
     blocks: list[str] = []
+    needs_price: list[dict] = []   # variable-pricing items awaiting operator-confirmed price
 
     if tier.get("requires_human_confirmation"):
         warnings.append(f"Tier '{tier_name}' requires human confirmation for discount level.")
@@ -228,11 +229,17 @@ def calculate_invoice_prices(
             continue
 
         if product.get("variable_pricing") and product.get("msrp_bottle_cents") is None:
-            blocks.append(
-                f"Variable pricing, no MSRP: {product['name']} {product.get('vintage')}. "
-                "Needs price confirmation."
-            )
-            continue
+            # Operator can confirm a per-bottle list price in-thread; once set we
+            # price it like any catalog item (tier multiplier still applies).
+            manual_cents = item.get("manual_price_cents")
+            if manual_cents is None:
+                needs_price.append({
+                    "product_name": product["name"],
+                    "vintage": product.get("vintage"),
+                    "label": f"{product['name']} {product.get('vintage') or ''}".strip(),
+                })
+                continue
+            product = {**product, "msrp_bottle_cents": int(manual_cents)}
 
         if tier_name in product.get("tier_unavailable", []):
             blocks.append(
@@ -288,4 +295,5 @@ def calculate_invoice_prices(
         "shipping_cents": shipping_cents,
         "warnings": warnings,
         "blocks": blocks,
+        "needs_price": needs_price,
     }

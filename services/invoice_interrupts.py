@@ -17,6 +17,8 @@ def current_invoice_interrupt(state: dict | None) -> str | None:
         return "confirm_customer"
     if state.get("customer") and not state.get("tier_name"):
         return "tier"
+    if state.get("awaiting_price") and not state.get("invoice_preview"):
+        return "price_confirmation"
     if state.get("approval") == "edit_requested" and state.get("invoice_preview"):
         return "edit_instruction"
     if (

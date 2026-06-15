@@ -180,6 +180,16 @@ def render(state: dict, space_id: str, *, is_card_click: bool = False) -> dict:
         return _text("I need a bit more info. Please provide:\n• " + "\n• ".join(fields),
                       is_card_click=is_card_click)
 
+    elif ix == "price_confirmation":
+        pending = state.get("awaiting_price") or []
+        label = (pending[0].get("label") if pending else "") or "an item"
+        tier = state.get("tier_name", "")
+        msg = (f"“{label}” has variable pricing with no list price on file.\n\n"
+               f"What MSRP (list) price per bottle should I use? Reply with the amount "
+               f"(e.g. 45 or $45.00)")
+        msg += f" — the {tier} tier discount still applies." if tier else "."
+        return _text(msg, is_card_click=is_card_click)
+
     elif ix == "confirm_customer":
         c = state.get("customer", {})
         name = c.get("full_name") or c.get("company") or "Unknown"
@@ -522,7 +532,7 @@ async def _handle_message(event: dict, space_id: str, thread_id: str, config: di
     try:
         snapshot = invoice_graph.get_state(config)
         ix = which(snapshot.values) if snapshot and snapshot.next else None
-        if ix in ("missing", "edit_instruction", "edit_clarification"):
+        if ix in ("missing", "edit_instruction", "edit_clarification", "price_confirmation"):
             log.info("[gc:message] resuming %s interrupt space=%s", ix, space_id)
             result = invoice_graph.invoke(Command(resume=text), config=config)
             return render(result, space_id)
