@@ -262,6 +262,18 @@ _CHAT_CERTS_URL = (
 )
 
 
+def _peek_jwt_claims(token: str) -> dict:
+    """Decode a JWT's claims WITHOUT verifying (diagnostic only)."""
+    import base64
+    import json as _json
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)  # pad base64url
+        return _json.loads(base64.urlsafe_b64decode(payload))
+    except Exception:
+        return {}
+
+
 def _verify_google_chat_token(auth_header: str) -> tuple[bool, str]:
     """Return (ok, reason). Verifies the Google Chat Bearer JWT (sync — call via
     a thread)."""
@@ -276,7 +288,11 @@ def _verify_google_chat_token(auth_header: str) -> tuple[bool, str]:
             token, g_requests.Request(), audience=audience, certs_url=_CHAT_CERTS_URL
         )
     except Exception as e:
-        return False, f"verify failed: {e}"
+        # Diagnostic: show what the token actually claims so we can point at the
+        # right issuer/certs/audience (observe mode only).
+        c = _peek_jwt_claims(token)
+        return False, (f"verify failed: {e} | unverified iss={c.get('iss')!r} "
+                       f"aud={c.get('aud')!r} email={c.get('email')!r}")
     if claims.get("iss") != _CHAT_ISSUER:
         return False, f"bad issuer: {claims.get('iss')!r}"
     aud_note = "aud-checked" if audience else "aud-unchecked(no project number)"
