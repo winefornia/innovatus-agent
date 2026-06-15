@@ -75,6 +75,61 @@ async def _ainvoke(*args, **kwargs):
 async def _aget_state(config: dict):
     return await asyncio.to_thread(invoice_graph.get_state, config)
 
+
+# How long to wait for a synchronous result before acking and finishing async.
+# Must stay under Google Chat's ~30s webhook timeout.
+_ACK_DEADLINE = float(os.getenv("GCHAT_ACK_DEADLINE", "20"))
+
+
+def _to_message_body(resp: dict) -> dict:
+    """Convert a handler response to a Chat REST Message body for async posting.
+
+    Keeps only text/cardsV2 (drops the interaction-only actionResponse) and
+    rewrites card buttons to the add-on callback form so they still work.
+    """
+    if not isinstance(resp, dict):
+        return {}
+    body = {k: v for k, v in resp.items() if k in ("text", "cardsV2") and v not in ("", None)}
+    if body.get("cardsV2"):
+        try:
+            from app.adapters.gchat_format import rewrite_card_buttons
+            rewrite_card_buttons(body["cardsV2"])
+        except Exception:
+            pass
+    return body
+
+
+async def _post_message_to_space(space_name: str, body: dict) -> bool:
+    """Post a message to a Chat space via the REST API (app auth, chat.bot).
+
+    Used to deliver a result that finished AFTER the synchronous webhook ack, so
+    a slow run no longer shows the operator a timeout error.
+    """
+    if not space_name or not body:
+        return False
+    try:
+        from google.oauth2 import service_account
+        from google.auth.transport.requests import Request as _GReq
+        sa = _service_account_info()
+        if not sa:
+            log.error("[gc:async] no service account configured — cannot post result")
+            return False
+        creds = service_account.Credentials.from_service_account_info(sa, scopes=_CHAT_APP_SCOPES)
+        await asyncio.to_thread(creds.refresh, _GReq())
+        url = f"https://chat.googleapis.com/v1/{space_name}/messages"
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                url, headers={"Authorization": f"Bearer {creds.token}"}, json=body
+            )
+        if r.status_code in (200, 201):
+            log.info("[gc:async] posted result to %s", space_name)
+            return True
+        log.error("[gc:async] post failed %s: %s", r.status_code, r.text[:300])
+        return False
+    except Exception as e:
+        log.error("[gc:async] post error: %s", e)
+        return False
+
 # Stale-click guard: maps action name → valid interrupt stages
 _VALID_AT: dict[str, set[str]] = {
     "gc_confirm_yes": {"confirm_customer"},
@@ -519,19 +574,61 @@ from app.adapters.gchat_format import (
 async def handle_google_chat_event(event: dict) -> dict:
     """Entry point. Detects event format, normalizes, dispatches, wraps response.
 
-    Never raises — any unhandled error returns a graceful message so the webhook
-    can't 500 (which would make Google Chat retry and storm the endpoint).
+    Deadline race: if the work finishes within _ACK_DEADLINE, respond
+    synchronously (normal, best UX). If it runs long, return a quick ack so
+    Google Chat doesn't time out, and a background task posts the real result to
+    the space via the Chat API when it's done. Never raises.
     """
     is_addon = "chat" in event
+    ev = _normalize_addon_event(event) if is_addon else event
+    if is_addon:
+        log.info("[gc:addon] normalizing Workspace Add-on event")
+    space_name = (ev.get("space") or {}).get("name") or ""
+    etype = ev.get("type")
+    async_enabled = (
+        (os.getenv("GCHAT_ASYNC", "on") or "on").lower() == "on"
+        and bool(space_name)
+        and etype in ("MESSAGE", "CARD_CLICKED")
+    )
+
+    async def _run() -> dict:
+        try:
+            return await _route_event(ev)
+        except Exception as e:
+            log.error("[gc] unhandled error: %s", e, exc_info=True)
+            return _text("Sorry — something went wrong handling that. Please try again.")
+
+    if not async_enabled:
+        resp = await _run()
+        return _wrap_addon_response(resp) if is_addon else resp
+
+    # Compute in the background; deliver sync if fast, else ack + post async.
+    holder: dict = {}
+    finished = asyncio.Event()
+
+    async def _compute():
+        holder["resp"] = await _run()
+        finished.set()
+
+    asyncio.create_task(_compute())
     try:
-        ev = _normalize_addon_event(event) if is_addon else event
-        if is_addon:
-            log.info("[gc:addon] normalizing Workspace Add-on event")
-        resp = await _route_event(ev)
-    except Exception as e:
-        log.error("[gc] unhandled error: %s", e, exc_info=True)
-        resp = _text("Sorry — something went wrong handling that. Please try again.")
-    return _wrap_addon_response(resp) if is_addon else resp
+        await asyncio.wait_for(asyncio.shield(finished.wait()), timeout=_ACK_DEADLINE)
+        resp = holder["resp"]                       # finished in time → sync result
+        return _wrap_addon_response(resp) if is_addon else resp
+    except asyncio.TimeoutError:
+        pass
+
+    # Slow op: ack now, and post the real result to the space when it lands.
+    log.info("[gc:async] slow op (>%.0fs) — acking; will post result to %s",
+             _ACK_DEADLINE, space_name)
+
+    async def _post_when_ready():
+        await finished.wait()
+        await _post_message_to_space(space_name, _to_message_body(holder.get("resp", {})))
+
+    asyncio.create_task(_post_when_ready())
+    ack = _text("⏳ Working on it — I'll post the result here in a moment.")
+    return _wrap_addon_response(ack) if is_addon else ack
 
 
 async def _route_event(event: dict) -> dict:
