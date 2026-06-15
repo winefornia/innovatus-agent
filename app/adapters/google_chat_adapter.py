@@ -34,6 +34,47 @@ log = logging.getLogger(__name__)
 # Per-space tier wizard accumulator  {space_id: {tier, schedule}}
 _wizard: dict[str, dict] = {}
 
+# ── Stability primitives ─────────────────────────────────────────────────────
+# Per-thread lock serializes events for one space so concurrent messages/clicks
+# never race on the shared LangGraph checkpoint.
+_locks: dict[str, "asyncio.Lock"] = {}
+# Bounded dedup of processed message ids. Google Chat RETRIES the webhook when a
+# response is slow (invoice runs can take 30–60s), which would otherwise double-
+# process and create duplicate invoices. We record a message id on first sight
+# (before processing) so any retry is dropped.
+import collections
+_seen_messages: "collections.OrderedDict[str, None]" = collections.OrderedDict()
+_SEEN_MAX = 1000
+
+
+def _lock_for(thread_id: str) -> "asyncio.Lock":
+    lock = _locks.get(thread_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _locks[thread_id] = lock
+    return lock
+
+
+def _already_seen(message_name: str) -> bool:
+    if not message_name:
+        return False
+    if message_name in _seen_messages:
+        return True
+    _seen_messages[message_name] = None
+    while len(_seen_messages) > _SEEN_MAX:
+        _seen_messages.popitem(last=False)
+    return False
+
+
+# Run blocking graph/LLM/DB work off the event loop so one slow invoice never
+# stalls health checks or other spaces (which would risk a mid-run restart).
+async def _ainvoke(*args, **kwargs):
+    return await asyncio.to_thread(invoice_graph.invoke, *args, **kwargs)
+
+
+async def _aget_state(config: dict):
+    return await asyncio.to_thread(invoice_graph.get_state, config)
+
 # Stale-click guard: maps action name → valid interrupt stages
 _VALID_AT: dict[str, set[str]] = {
     "gc_confirm_yes": {"confirm_customer"},
@@ -476,15 +517,21 @@ from app.adapters.gchat_format import (
 
 
 async def handle_google_chat_event(event: dict) -> dict:
-    """Entry point. Detects event format, normalizes, dispatches, wraps response."""
+    """Entry point. Detects event format, normalizes, dispatches, wraps response.
+
+    Never raises — any unhandled error returns a graceful message so the webhook
+    can't 500 (which would make Google Chat retry and storm the endpoint).
+    """
     is_addon = "chat" in event
-    if is_addon:
-        log.info("[gc:addon] normalizing Workspace Add-on event")
-        event = _normalize_addon_event(event)
-    resp = await _route_event(event)
-    if is_addon:
-        resp = _wrap_addon_response(resp)
-    return resp
+    try:
+        ev = _normalize_addon_event(event) if is_addon else event
+        if is_addon:
+            log.info("[gc:addon] normalizing Workspace Add-on event")
+        resp = await _route_event(ev)
+    except Exception as e:
+        log.error("[gc] unhandled error: %s", e, exc_info=True)
+        resp = _text("Sorry — something went wrong handling that. Please try again.")
+    return _wrap_addon_response(resp) if is_addon else resp
 
 
 async def _route_event(event: dict) -> dict:
@@ -510,10 +557,16 @@ async def _route_event(event: dict) -> dict:
     config     = {"configurable": {"thread_id": thread_id}}
 
     if event_type == "MESSAGE":
-        return await _handle_message(event, space_id, thread_id, config)
+        message_name = (event.get("message") or {}).get("name", "")
+        async with _lock_for(thread_id):
+            if _already_seen(message_name):
+                log.info("[gc] dropping duplicate/retried MESSAGE %s", message_name)
+                return {"text": ""}
+            return await _handle_message(event, space_id, thread_id, config)
 
     if event_type == "CARD_CLICKED":
-        return await _handle_card_clicked(event, space_id, thread_id, config)
+        async with _lock_for(thread_id):
+            return await _handle_card_clicked(event, space_id, thread_id, config)
 
     return _text("Unknown event type.")
 
@@ -541,7 +594,7 @@ async def _handle_message(event: dict, space_id: str, thread_id: str, config: di
             if pdf_bytes:
                 try:
                     from services.pdf_service import extract_invoice_fields_from_pdf
-                    extracted = extract_invoice_fields_from_pdf(pdf_bytes)
+                    extracted = await asyncio.to_thread(extract_invoice_fields_from_pdf, pdf_bytes)
                     text = extracted  # use extracted text instead of message text
                     is_new_pdf = True  # a PDF always starts a new invoice
                     log.info("[gc:pdf] extracted %d chars from PDF", len(extracted))
@@ -560,7 +613,7 @@ async def _handle_message(event: dict, space_id: str, thread_id: str, config: di
     pending_ix = None
     if not is_new_pdf:
         try:
-            snapshot = invoice_graph.get_state(config)
+            snapshot = await _aget_state(config)
             pending_ix = which(snapshot)
             log.info("[gc:message] pending interrupt=%r (snapshot.next=%s)",
                      pending_ix, getattr(snapshot, "next", None))
@@ -572,7 +625,7 @@ async def _handle_message(event: dict, space_id: str, thread_id: str, config: di
         # to a fresh run (a resume error must surface, not silently restart).
         log.info("[gc:message] resuming %s interrupt space=%s", pending_ix, space_id)
         try:
-            result = invoice_graph.invoke(Command(resume=text), config=config)
+            result = await _ainvoke(Command(resume=text), config=config)
             return render(result, space_id)
         except Exception as e:
             log.error("[gc:message] resume failed (%s): %s", pending_ix, e, exc_info=True)
@@ -581,13 +634,14 @@ async def _handle_message(event: dict, space_id: str, thread_id: str, config: di
 
     # New request (new PDF, new order, or a message after the prior invoice
     # ended). Wipe any leftover state so this invoice starts from a clean slate.
-    _reset_thread(thread_id)
+    await asyncio.to_thread(_reset_thread, thread_id)
 
     # Start fresh through the gateway so guardrails, control-layer traces, and
     # workflow records match the Telegram/API paths.
     log.info("[gc:message] new run space=%s text=%r", space_id, text[:80])
     try:
-        result = gateway.dispatch(
+        result = await asyncio.to_thread(
+            gateway.dispatch,
             NormalizedMessage(
                 user_id=f"gc_{sender_id}",
                 channel="google_chat",
@@ -596,7 +650,7 @@ async def _handle_message(event: dict, space_id: str, thread_id: str, config: di
                 raw={"space_id": space_id, "sender_id": sender_id},
                 attachments=[],
                 sender_id=sender_id,
-            )
+            ),
         )
         ix = which(result)
         log.info("[gc:run] which=%r intent=%r customer_confirmed=%r tier=%r",
@@ -636,7 +690,7 @@ async def _handle_card_clicked(event: dict, space_id: str, thread_id: str, confi
         resume_val = f"{tier}, {sched}, {methods_str}"
         log.info("[gc:wizard] resuming with: %r", resume_val)
         try:
-            result = invoice_graph.invoke(Command(resume=resume_val), config=config)
+            result = await _ainvoke(Command(resume=resume_val), config=config)
             ix = which(result)
             log.info("[gc:wizard] result: which=%r tier=%r items=%d",
                      ix, result.get("tier_name"), len(result.get("line_items", [])))
@@ -648,7 +702,7 @@ async def _handle_card_clicked(event: dict, space_id: str, thread_id: str, confi
     # ── Edit — resume graph into the edit-instruction checkpoint ─────────
     if action_name == "gc_edit":
         try:
-            result = invoice_graph.invoke(Command(resume="edit"), config=config)
+            result = await _ainvoke(Command(resume="edit"), config=config)
             return render(result, space_id, is_card_click=True)
         except Exception as e:
             log.error("[gc:edit] error: %s", e, exc_info=True)
@@ -657,7 +711,7 @@ async def _handle_card_clicked(event: dict, space_id: str, thread_id: str, confi
     # ── All other card actions → stale-click guard then resume graph ───────
     if action_name in _VALID_AT:
         try:
-            snapshot = invoice_graph.get_state(config)
+            snapshot = await _aget_state(config)
             ix = which(snapshot) if snapshot else None
         except Exception:
             ix = None
@@ -675,7 +729,7 @@ async def _handle_card_clicked(event: dict, space_id: str, thread_id: str, confi
 
     try:
         log.info("[gc:click] resuming graph action=%r thread=%s", action_name, thread_id)
-        result = invoice_graph.invoke(Command(resume=resume_val), config=config)
+        result = await _ainvoke(Command(resume=resume_val), config=config)
         ix_after = which(result)
         log.info("[gc:click] after resume: which=%r", ix_after)
         return render(result, space_id, is_card_click=True)

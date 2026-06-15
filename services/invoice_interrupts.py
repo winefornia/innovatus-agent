@@ -90,6 +90,15 @@ def _infer_from_state(state: dict | None) -> str | None:
         return "price_confirmation"
     if state.get("approval") == "edit_requested" and state.get("invoice_preview"):
         return "edit_instruction"
+    if (
+        state.get("edit_instruction")
+        and not state.get("approval")
+        and state.get("invoice_preview")
+        and not state.get("square_invoice_id")
+    ):
+        changes = (state.get("edit_patch") or {}).get("field_changes", [])
+        if any(change.get("confidence", 1.0) < 0.80 for change in changes):
+            return "edit_clarification"
     if state.get("invoice_preview") and not state.get("approval") and not state.get("square_invoice_id"):
         return "approval"
     if state.get("square_invoice_id") and not state.get("send_decision"):
