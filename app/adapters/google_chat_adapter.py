@@ -21,7 +21,7 @@ import logging
 import os
 import httpx
 from langgraph.types import Command
-from agents.invoice_graph import invoice_graph
+from agents.invoice_graph import invoice_graph, checkpointer
 from services.gateway import NormalizedMessage, gateway
 from services.invoice_interrupts import current_invoice_interrupt as which
 
@@ -283,6 +283,22 @@ def _extract_text(event: dict) -> str:
     return text.strip()
 
 
+def _reset_thread(thread_id: str) -> None:
+    """Wipe a thread's checkpoint so a new invoice starts from a clean slate.
+
+    Google Chat uses one persistent thread per space (gc_<space_id>), so without
+    this a new order/PDF would inherit the previous invoice's customer, tier,
+    preview, etc. We reset whenever a message starts a NEW request rather than
+    answering a pending text-input interrupt — giving every invoice a clear
+    start and end within the same chat space.
+    """
+    try:
+        checkpointer.delete_thread(thread_id)
+        log.info("[gc] reset thread %s (new request — cleared prior invoice state)", thread_id)
+    except Exception as e:
+        log.warning("[gc] reset thread %s failed: %s", thread_id, e)
+
+
 # Chat media download auth, ordered most-stable first. Each candidate is tried
 # in turn until one returns a 200 (see _download_chat_media). Service-account app
 # auth never needs a refresh token; user OAuth tokens silently expire (7 days for
@@ -506,6 +522,7 @@ async def _handle_message(event: dict, space_id: str, thread_id: str, config: di
              list(msg_obj.keys()) if attachments else "N/A")
     if attachments:
         log.info("[gc:message] attachment payload: %s", attachments)
+    is_new_pdf = False
     for att in attachments:
         content_type = att.get("contentType", "")
         name = att.get("name", "")
@@ -517,6 +534,7 @@ async def _handle_message(event: dict, space_id: str, thread_id: str, config: di
                     from services.pdf_service import extract_invoice_fields_from_pdf
                     extracted = extract_invoice_fields_from_pdf(pdf_bytes)
                     text = extracted  # use extracted text instead of message text
+                    is_new_pdf = True  # a PDF always starts a new invoice
                     log.info("[gc:pdf] extracted %d chars from PDF", len(extracted))
                 except Exception as e:
                     log.error("[gc:pdf] extraction error: %s", e)
@@ -528,16 +546,22 @@ async def _handle_message(event: dict, space_id: str, thread_id: str, config: di
     if not text:
         return {"text": ""}
 
-    # If there's a pending text-input interrupt, resume it
-    try:
-        snapshot = invoice_graph.get_state(config)
-        ix = which(snapshot.values) if snapshot and snapshot.next else None
-        if ix in ("missing", "edit_instruction", "edit_clarification", "price_confirmation"):
-            log.info("[gc:message] resuming %s interrupt space=%s", ix, space_id)
-            result = invoice_graph.invoke(Command(resume=text), config=config)
-            return render(result, space_id)
-    except Exception:
-        pass
+    # A typed reply to a pending text-input interrupt CONTINUES the current
+    # invoice. A new PDF never continues — it's always a fresh invoice.
+    if not is_new_pdf:
+        try:
+            snapshot = invoice_graph.get_state(config)
+            ix = which(snapshot.values) if snapshot and snapshot.next else None
+            if ix in ("missing", "edit_instruction", "edit_clarification", "price_confirmation"):
+                log.info("[gc:message] resuming %s interrupt space=%s", ix, space_id)
+                result = invoice_graph.invoke(Command(resume=text), config=config)
+                return render(result, space_id)
+        except Exception:
+            pass
+
+    # New request (new PDF, new order, or a message after the prior invoice
+    # ended). Wipe any leftover state so this invoice starts from a clean slate.
+    _reset_thread(thread_id)
 
     # Start fresh through the gateway so guardrails, control-layer traces, and
     # workflow records match the Telegram/API paths.
