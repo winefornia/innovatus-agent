@@ -106,6 +106,7 @@ class InvoiceState(TypedDict, total=False):
     square_order_id: str
     square_invoice_id: str
     square_invoice_version: int
+    square_invoice_url: str         # public pay link (set after publish)
     send_decision: Literal["send", "draft"]
 
     # Email receipt
@@ -1048,12 +1049,17 @@ def publish_invoice_node(state: InvoiceState) -> InvoiceState:
     customer_name = state.get("customer", {}).get("full_name", "customer")
     preview = state.get("invoice_preview", {})
     total = preview.get("total_before_tax_cents", 0) / 100
+    pay_url = result.get("public_url") or ""
+    msg = (
+        f"Invoice sent to {customer_name}.\n"
+        f"Total: ${total:.2f}\n"
+        f"Square Invoice ID: {state['square_invoice_id']}"
+    )
+    if pay_url:
+        msg += f"\nPay link: {pay_url}"
     return {
-        "final_response": (
-            f"Invoice sent to {customer_name}.\n"
-            f"Total: ${total:.2f}\n"
-            f"Square Invoice ID: {state['square_invoice_id']}"
-        )
+        "square_invoice_url": pay_url,
+        "final_response": msg,
     }
 
 

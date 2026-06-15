@@ -22,22 +22,43 @@ def _ikey(case_id: str, action: str) -> str:
     raw = f"winefornia:{case_id}:{action}:v1"
     return hashlib.sha256(raw.encode()).hexdigest()[:45]
 
-from app.config import SQUARE_PROD_ACCESS_TOKEN, SQUARE_PROD_LOCATION_ID, SQUARE_LOCATION_ID
+from app.config import (
+    SQUARE_PROD_ACCESS_TOKEN,
+    SQUARE_PROD_LOCATION_ID,
+    SQUARE_ACCESS_TOKEN,
+    SQUARE_LOCATION_ID,
+    SQUARE_ENVIRONMENT,
+)
 
 _client = None
+
+
+def _use_sandbox() -> bool:
+    """Use Square sandbox ONLY when explicitly requested AND a sandbox token is
+    present. Production-safe: prod (which has no sandbox token) always stays on
+    production even if SQUARE_ENVIRONMENT is unset/misread."""
+    return (SQUARE_ENVIRONMENT or "").strip().lower() == "sandbox" and bool(SQUARE_ACCESS_TOKEN)
+
+
+def _active_location() -> str:
+    return (SQUARE_LOCATION_ID if _use_sandbox() else SQUARE_PROD_LOCATION_ID) or ""
 
 
 def _get_client():
     global _client
     if _client:
         return _client
-    token = SQUARE_PROD_ACCESS_TOKEN
-    if not token:
-        return None
     try:
         from square import Square
         from square.environment import SquareEnvironment
-        _client = Square(token=token, environment=SquareEnvironment.PRODUCTION)
+        if _use_sandbox():
+            if not SQUARE_ACCESS_TOKEN:
+                return None
+            _client = Square(token=SQUARE_ACCESS_TOKEN, environment=SquareEnvironment.SANDBOX)
+        else:
+            if not SQUARE_PROD_ACCESS_TOKEN:
+                return None
+            _client = Square(token=SQUARE_PROD_ACCESS_TOKEN, environment=SquareEnvironment.PRODUCTION)
         return _client
     except Exception:
         return None
@@ -96,7 +117,7 @@ def create_order(customer_name: str, line_items: list[dict], location_id: Option
     client = _get_client()
     if not client:
         return {"error": "Square not configured. Set SQUARE_PROD_ACCESS_TOKEN in .env"}
-    loc = location_id or SQUARE_PROD_LOCATION_ID or SQUARE_LOCATION_ID
+    loc = location_id or _active_location()
     if not loc:
         return {"error": "SQUARE_LOCATION_ID not set. Add it to .env"}
 
@@ -161,7 +182,7 @@ def create_invoice_draft(
     client = _get_client()
     if not client:
         return {"error": "Square not configured. Set SQUARE_PROD_ACCESS_TOKEN in .env"}
-    loc = location_id or SQUARE_PROD_LOCATION_ID or SQUARE_LOCATION_ID
+    loc = location_id or _active_location()
 
     days = SCHEDULE_TO_DAYS.get(payment_schedule, 30)
     due_date = (date.today() + timedelta(days=days)).isoformat()
