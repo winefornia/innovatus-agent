@@ -563,7 +563,9 @@ async def _handle_message(event: dict, space_id: str, thread_id: str, config: di
     if not is_new_pdf:
         try:
             snapshot = invoice_graph.get_state(config)
-            pending_ix = which(snapshot) if snapshot and snapshot.next else None
+            pending_ix = which(snapshot)
+            log.info("[gc:message] pending interrupt=%r (snapshot.next=%s)",
+                     pending_ix, getattr(snapshot, "next", None))
         except Exception as e:
             log.error("[gc:message] get_state failed: %s", e)
 

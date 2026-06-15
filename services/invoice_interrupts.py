@@ -38,13 +38,24 @@ TEXT_INPUT_INTERRUPTS = frozenset(
 
 
 def interrupt_payload(obj) -> dict | None:
-    """Return the first pending interrupt payload dict from a result or snapshot."""
+    """Return the first pending interrupt payload dict from a result or snapshot.
+
+    Works across checkpointers: an invoke() result carries "__interrupt__";
+    a StateSnapshot may expose .interrupts (MemorySaver) and/or only populate
+    .tasks[*].interrupts (PostgresSaver) — we check all of them.
+    """
     if obj is None:
         return None
+    interrupts = None
     if isinstance(obj, dict):
         interrupts = obj.get("__interrupt__")
     else:
         interrupts = getattr(obj, "interrupts", None)
+        if not interrupts:
+            collected = []
+            for task in (getattr(obj, "tasks", None) or ()):
+                collected.extend(getattr(task, "interrupts", None) or ())
+            interrupts = collected
     if not interrupts:
         return None
     first = interrupts[0]
