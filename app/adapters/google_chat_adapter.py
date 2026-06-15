@@ -14,7 +14,11 @@ Event flow:
 Thread ID scheme: gc_{space_id}   (e.g. gc_AAAAbcde1fg)
 """
 
+import asyncio
+import base64
+import json
 import logging
+import os
 import httpx
 from langgraph.types import Command
 from agents.invoice_graph import invoice_graph
@@ -269,24 +273,149 @@ def _extract_text(event: dict) -> str:
     return text.strip()
 
 
-async def _download_attachment(attachment: dict, bearer_token: str | None) -> bytes | None:
-    """Download a Google Chat attachment via its download URI."""
-    download_uri = attachment.get("attachmentDataRef", {}).get("resourceName")
-    content_uri = attachment.get("downloadUri")
-    # Google Chat HTTP apps get downloadUri directly in some cases
-    uri = content_uri or download_uri
+# Chat media download auth, ordered most-stable first. Each candidate is tried
+# in turn until one returns a 200 (see _download_chat_media). Service-account app
+# auth never needs a refresh token; user OAuth tokens silently expire (7 days for
+# a testing-mode OAuth app) — that was the root cause of intermittent "invalid
+# PDF" / download failures.
+_CHAT_APP_SCOPES = ["https://www.googleapis.com/auth/chat.bot"]
+_CHAT_USER_SCOPES = ["https://www.googleapis.com/auth/chat.messages.readonly"]
+
+
+def _service_account_info() -> dict | None:
+    """Decode the shared service-account JSON (same secret the Gmail path uses)."""
+    raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON_B64")
+    if not raw:
+        return None
+    try:
+        return json.loads(base64.b64decode(raw).decode())
+    except Exception as e:
+        log.warning("[gc:auth] bad GOOGLE_SERVICE_ACCOUNT_JSON_B64: %s", e)
+        return None
+
+
+def _user_token_info(sender_email: str = "") -> dict | None:
+    """Per-account user OAuth token, preferring the sender, then the default."""
+    def _b64_for(email: str) -> str | None:
+        if not email or "@" not in email:
+            return None
+        safe = email.upper().replace("@", "_").replace(".", "_").replace("-", "_")
+        return os.environ.get(f"GOOGLE_TOKEN_JSON_B64_{safe}")
+
+    raw = _b64_for(sender_email) or _b64_for(os.environ.get("GOOGLE_ACCOUNT_EMAIL", ""))
+    if not raw:
+        return None
+    try:
+        return json.loads(base64.b64decode(raw).decode())
+    except Exception as e:
+        log.warning("[gc:auth] bad user token for %r: %s", sender_email, e)
+        return None
+
+
+def _chat_cred_candidates(sender_email: str = ""):
+    """Yield (label, creds) pairs that may authorize a Chat media download,
+    most-stable first. The caller tries each until one returns a 200."""
+    from google.oauth2 import service_account
+    from google.oauth2.credentials import Credentials
+
+    sa_info = _service_account_info()
+    if sa_info:
+        # 1. App authentication — the Chat app reads its own attachment.
+        try:
+            yield "sa_app", service_account.Credentials.from_service_account_info(
+                sa_info, scopes=_CHAT_APP_SCOPES)
+        except Exception as e:
+            log.warning("[gc:auth] sa_app creds failed: %s", e)
+        # 2. Domain-wide delegation impersonating a space member.
+        subject = (sender_email if sender_email and "@" in sender_email
+                   else os.environ.get("GOOGLE_DELEGATED_USER_EMAIL")
+                   or os.environ.get("GOOGLE_ACCOUNT_EMAIL", ""))
+        if subject and "@" in subject:
+            try:
+                yield "sa_dwd", service_account.Credentials.from_service_account_info(
+                    sa_info, scopes=_CHAT_USER_SCOPES, subject=subject)
+            except Exception as e:
+                log.warning("[gc:auth] sa_dwd creds failed: %s", e)
+
+    # 3. User OAuth token (legacy fallback).
+    info = _user_token_info(sender_email)
+    if info:
+        try:
+            yield "user_oauth", Credentials.from_authorized_user_info(info)
+        except Exception as e:
+            log.warning("[gc:auth] user_oauth creds failed: %s", e)
+
+
+async def _download_chat_media(resource_name: str, sender_email: str = "") -> bytes | None:
+    """Download an UPLOADED_CONTENT attachment via the Chat API media endpoint.
+
+    Tries each auth strategy (app auth → delegation → user token) and returns the
+    bytes from the first that yields a 200, so a single stale credential no longer
+    breaks PDF intake.
+    """
+    from urllib.parse import quote
+    from google.auth.transport.requests import Request as _GReq
+
+    url = f"https://chat.googleapis.com/v1/media/{quote(resource_name, safe='')}?alt=media"
+    candidates = list(_chat_cred_candidates(sender_email))
+    if not candidates:
+        log.error("[gc:download] no Chat credential available for sender=%r "
+                  "(set GOOGLE_SERVICE_ACCOUNT_JSON_B64 or GOOGLE_TOKEN_JSON_B64_*)",
+                  sender_email)
+        return None
+
+    last_status = None
+    async with httpx.AsyncClient(timeout=30) as client:
+        for label, creds in candidates:
+            try:
+                await asyncio.to_thread(creds.refresh, _GReq())
+            except Exception as e:
+                log.warning("[gc:download] %s token refresh failed: %s", label, e)
+                continue
+            r = await client.get(url, headers={"Authorization": f"Bearer {creds.token}"},
+                                 follow_redirects=True)
+            if r.status_code == 200:
+                log.info("[gc:download] media OK via %s (%d bytes)", label, len(r.content))
+                return r.content
+            last_status = r.status_code
+            log.warning("[gc:download] media %s via %s body=%s",
+                        r.status_code, label, r.text[:300])
+
+    log.error("[gc:download] all Chat credentials failed for sender=%r (last status=%s)",
+              sender_email, last_status)
+    return None
+
+
+async def _download_attachment(attachment: dict, sender_email: str = "") -> bytes | None:
+    """Download a Google Chat attachment.
+
+    Uploaded files (source=UPLOADED_CONTENT) must be fetched via the Chat media
+    API using attachmentDataRef.resourceName + a credential that can read the
+    message. The browser-facing downloadUri (chat.google.com/api/get_attachment_url)
+    needs a logged-in user session and returns an HTML page to a programmatic
+    caller, which then fails downstream as an "invalid PDF" — so we never use it
+    for uploaded content.
+    """
+    ref = attachment.get("attachmentDataRef") or {}
+    resource_name = ref.get("resourceName")
+    if resource_name:
+        try:
+            return await _download_chat_media(resource_name, sender_email)
+        except Exception as e:
+            log.error("[gc:download] Chat media API download failed: %s", e)
+            return None
+
+    # Fallback only for link-style attachments (source=DRIVE_FILE / external URL).
+    uri = attachment.get("downloadUri")
     if not uri:
         return None
     try:
-        headers = {}
-        if bearer_token:
-            headers["Authorization"] = f"Bearer {bearer_token}"
         async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.get(uri, headers=headers, follow_redirects=True)
+            r = await client.get(uri, follow_redirects=True)
             r.raise_for_status()
             return r.content
     except Exception as e:
-        log.error("[gc:download] failed to download attachment: %s", e)
+        log.error("[gc:download] fallback download failed: %s", e)
         return None
 
 
@@ -372,7 +501,7 @@ async def _handle_message(event: dict, space_id: str, thread_id: str, config: di
         name = att.get("name", "")
         if "pdf" in content_type or name.lower().endswith(".pdf"):
             log.info("[gc:message] PDF attachment detected: %s", name)
-            pdf_bytes = await _download_attachment(att, bearer_token=None)
+            pdf_bytes = await _download_attachment(att, sender_email=sender_id)
             if pdf_bytes:
                 try:
                     from services.pdf_service import extract_invoice_fields_from_pdf
