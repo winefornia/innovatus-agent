@@ -745,12 +745,27 @@ def confirm_item_prices(state: InvoiceState) -> InvoiceState:
     extracted = dict(state.get("extracted", {}) or {})
     items = list(extracted.get("items", []) or [])
     if cents is not None:
-        pn = (target.get("product_name") or "").lower()
-        vt = str(target.get("vintage"))
-        for it in items:
-            if it.get("product_name", "").lower() == pn and str(it.get("vintage")) == vt:
-                it["manual_price_cents"] = cents
-                break
+        idx = target.get("item_index")
+        applied = False
+        # Primary: apply by index (robust — the order may omit the vintage, so
+        # name/vintage matching against the catalog product is unreliable).
+        if isinstance(idx, int) and 0 <= idx < len(items):
+            items[idx]["manual_price_cents"] = cents
+            applied = True
+        else:
+            # Fallback (e.g. checkpoint written before item_index existed):
+            # match by product name, ignoring vintage — the order often omits it.
+            pn = (target.get("product_name") or "").lower()
+            for it in items:
+                ipn = (it.get("product_name") or "").lower()
+                if pn and (pn in ipn or ipn in pn) and not it.get("manual_price_cents"):
+                    it["manual_price_cents"] = cents
+                    applied = True
+                    break
+        logging.info("[invoice] price_confirmation: %s = %s cents (applied=%s)",
+                     label, cents, applied)
+    else:
+        logging.warning("[invoice] price_confirmation: could not parse price from %r", response)
     extracted["items"] = items
     # Clear the flag; resolve_products_and_prices will re-set it if another
     # variable-priced item still needs a price (loops until all are priced).

@@ -217,7 +217,7 @@ def calculate_invoice_prices(
     if tier.get("requires_human_confirmation"):
         warnings.append(f"Tier '{tier_name}' requires human confirmation for discount level.")
 
-    for item in items:
+    for idx, item in enumerate(items):
         product = find_product(
             item.get("product_name", ""),
             item.get("vintage"),
@@ -234,6 +234,7 @@ def calculate_invoice_prices(
             manual_cents = item.get("manual_price_cents")
             if manual_cents is None:
                 needs_price.append({
+                    "item_index": idx,   # robust pointer back to extracted item
                     "product_name": product["name"],
                     "vintage": product.get("vintage"),
                     "label": f"{product['name']} {product.get('vintage') or ''}".strip(),
