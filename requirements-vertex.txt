@@ -1,0 +1,5 @@
+# Vertex ADK migration deps — kept separate from requirements.txt so the
+# production image isn't bloated until cutover. Install in a dev venv:
+#   pip install -r requirements-vertex.txt
+google-adk>=1.0.0
+litellm>=1.83.0   # avoid 1.82.7-1.82.8 (March 2026 security advisory)
