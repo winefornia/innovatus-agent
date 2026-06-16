@@ -38,10 +38,27 @@ NONE, OFFERED, ACCEPTED, DECLINED = "none", "offered", "accepted", "declined"
 NOT_SENT, SENT, PAID = "not_sent", "sent", "paid"
 
 
-def classify_case_type(reservation: dict) -> str:
-    """PRODUCTION_TOUR if the form requested the winemaker tour, else STANDARD."""
-    exp = ((reservation or {}).get("experience_type") or "").lower()
-    if any(kw in exp for kw in ("production", "tour", "winemaker")):
+# The Squarespace "production tour + tasting with the winemaker" option is what
+# makes a case 3-party. The selection arrives in the form EMAIL body (HTML), which
+# the legacy pipeline did not persist to a structured field — so classify across
+# every text field we have, keyword-robust, rather than trusting experience_type.
+_TOUR_KEYWORDS = ("production tour", "winemaker", "tour + wine", "tour and wine")
+
+
+def classify_case_type(reservation: dict, *, source_text: str = "") -> str:
+    """PRODUCTION_TOUR if the winemaker tour was requested, else STANDARD.
+
+    Checks experience_type, notes, and any inbound form text (source_text) — the
+    intake step should pass the form email body here so the case type is captured
+    even though experience_type is often empty.
+    """
+    r = reservation or {}
+    haystack = " ".join([
+        str(r.get("experience_type") or ""),
+        str(r.get("notes") or ""),
+        source_text or "",
+    ]).lower()
+    if any(kw in haystack for kw in _TOUR_KEYWORDS):
         return PRODUCTION_TOUR
     return STANDARD
 
