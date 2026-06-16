@@ -127,6 +127,11 @@ async def handle_tastingroom_event(event: dict) -> dict:
     """Entry point for /webhooks/google-chat/tastingroom. Never raises."""
     is_addon = "chat" in event
     ev = normalize_addon_event(event) if is_addon else event
+    # Surface the space resource name so GOOGLE_CHAT_TR_SPACE can be read straight
+    # from the logs (it's what proactive approval cards post into).
+    log.info("[tr:gc] inbound type=%s space=%s user=%s",
+             ev.get("type"), (ev.get("space") or {}).get("name"),
+             (ev.get("user") or {}).get("email"))
     try:
         resp = await _route(ev)
     except Exception as e:
