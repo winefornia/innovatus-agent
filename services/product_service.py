@@ -316,6 +316,32 @@ def calculate_invoice_prices(
             line_items.append(li.model_dump())
             continue
 
+        # PRIORITY 1.5 — an operator-supplied *regular* unit price (e.g. given when
+        # answering a clarifying question). Unlike a price stated on an order doc,
+        # this is the pre-discount base: the selected tier's discount applies, so
+        # "1 case Viognier, 15% off" with a typed $75 invoices at $63.75. Used for
+        # items the catalog can't price; never re-asked once set.
+        regular_override = item.get("regular_unit_price_cents")
+        if regular_override is not None:
+            try:
+                base = int(regular_override)
+            except (TypeError, ValueError):
+                base = None
+            if base is not None:
+                final_unit_price = round(base * multiplier)
+                line_total = round(final_unit_price * bottle_count)
+                li = LineItem(
+                    product_name=disp_name, vintage=disp_vintage, size=disp_size,
+                    quantity=quantity, unit_type=unit_type,
+                    base_unit_price_cents=base,
+                    discount_percent=discount_pct,
+                    final_unit_price_cents=final_unit_price,
+                    line_total_cents=line_total,
+                    bottles_per_case=bottles_per_case,
+                )
+                line_items.append(li.model_dump())
+                continue
+
         # PRIORITY 2/3 — no stated price: look up the catalog.
         # Unknown product, or variable-pricing with no MSRP → ask the operator
         # to confirm a price (in-thread), rather than guessing or hard-failing.

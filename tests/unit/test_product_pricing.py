@@ -92,3 +92,28 @@ def test_stated_price_overrides_sheet_price():
     ]))
     assert li["final_unit_price_cents"] == 15000
     assert li["discount_percent"] == 0
+
+
+def test_operator_regular_price_gets_tier_discount():
+    # A price the operator typed when asked (regular_unit_price_cents) is the
+    # pre-discount base — the tier discount applies. "$75 regular, 15% off" → $63.75.
+    li = _line(calculate_invoice_prices("Club Member", [
+        {"product_name": "Special One-Off Wine", "quantity": 1,
+         "regular_unit_price_cents": 7500},
+    ]))
+    assert li["base_unit_price_cents"] == 7500
+    assert li["final_unit_price_cents"] == 6375   # 7500 * 0.85
+    assert li["discount_percent"] == 15
+
+
+def test_operator_regular_price_unknown_product_not_blocked():
+    # Even when the product isn't in the catalog, an operator price prices it
+    # (no needs_price, no block) so the flow never stalls or re-asks.
+    r = calculate_invoice_prices("Direct", [
+        {"product_name": "Mystery Magnum", "quantity": 2, "unit_type": "case",
+         "regular_unit_price_cents": 5000},
+    ])
+    assert not r["blocks"] and not r.get("needs_price")
+    li = r["line_items"][0]
+    assert li["final_unit_price_cents"] == 5000          # Direct = 0% off
+    assert li["line_total_cents"] == 5000 * 24           # 2 cases x 12 bottles
