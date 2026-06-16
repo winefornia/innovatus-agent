@@ -16,9 +16,7 @@ it yet, so the current FastAPI/LangGraph path keeps running until cutover.
 
 ## Run locally
 ```bash
-python -m venv .venv-vertex && source .venv-vertex/bin/activate
-pip install -r requirements-vertex.txt
-pip install -r requirements.txt        # for db/services the tools call
+pip install -r requirements.txt        # includes google-adk + litellm
 export ANTHROPIC_API_KEY=...           # Claude-direct (simplest)
 # plus the usual SUPABASE_URL / SUPABASE_SERVICE_KEY so the tools can read cases
 adk web                                # visual chat at http://localhost:8000
@@ -33,8 +31,13 @@ and propose one action (which posts an approval card to the Chat space).
 
 ## Status / what's next
 - [x] Vertex AI / Agent Platform API enabled on `winefornia-tastingroom-499611`.
-- [x] Parallel ADK agent scaffold (this package), Claude-powered, HITL preserved.
-- [ ] **You:** confirm billing on the project; pick the model path (Claude-direct vs Claude-on-Vertex) and, if Vertex, enable Claude in Model Garden + region/quota.
-- [ ] **Me:** local run against one real reservation; refine the goal model + cards.
-- [ ] **Me:** point the existing Chat add-on at this agent (replace the `case_desk_graph` call); keep approval cards.
-- [ ] **Me:** (optional) deploy to Vertex Agent Engine for a managed runtime — only if we want it over the current Fly runtime.
+- [x] Goal-oriented ADK agent (this package), Claude-powered, HITL preserved.
+- [x] 3-party coordination + two case types + party priority; case type detected from the form.
+- [x] Email intake rebuilt without LangGraph (`intake.py`); watcher routes here.
+- [x] **Legacy LangGraph removed** — `case_desk_graph`, `case_judge`, `case_memory`,
+      `safety_guards`, the 23-state machine, and graph-only scripts are deleted.
+      The agent is now the SOLE tasting-room engine.
+- [x] `google-adk` + `litellm` added to `requirements.txt`.
+- [ ] **Live end-to-end run** against a real inbound email (writes to Supabase) before deploy.
+- [ ] First non-dry-run approval card test.
+- [ ] (Optional) deploy to Vertex Agent Engine for a managed runtime vs. the current Fly runtime.

@@ -149,3 +149,12 @@ Powered by **Claude** (ADK + LiteLLM), running in Google Chat + Gmail.
 
 **SEQUENCE (safe):** build the agent to parity → validate on real cases in parallel
 → *then* delete the legacy pipeline. Never delete first.
+
+**STATUS — DONE:** the legacy LangGraph pipeline has been removed. Deleted:
+`agents/case_desk_graph.py`, `services/case_judge.py`, `services/case_memory.py`,
+`services/safety_guards.py`, the `TASTING_STATES`/`apply_state` machine in
+`tastingroom_service.py`, the graph-only `tasting_room_registry`, and the
+graph-only dev scripts. The Vertex ADK agent (`vertex_agent/`) is now the sole
+tasting-room engine; the watcher routes inbound mail through `vertex_agent/intake.py`.
+The invoice LangGraph (`agents/invoice_graph.py`, `bot.py`) is untouched.
+Remaining before deploy: a live end-to-end run on a real inbound email.

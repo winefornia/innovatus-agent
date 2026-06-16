@@ -2,6 +2,8 @@ from services import tastingroom_mailbox
 
 
 def test_process_gmail_message_uses_reservation_state_for_labels(monkeypatch):
+    """The mailbox routes inbound mail to the Vertex agent (coordinate_email) and
+    labels from the resolved reservation's state."""
     applied = {}
 
     monkeypatch.setattr(tastingroom_mailbox, "message_already_processed", lambda *args, **kwargs: False)
@@ -21,22 +23,23 @@ def test_process_gmail_message_uses_reservation_state_for_labels(monkeypatch):
         applied["add_labels"] = add_labels
 
     import services.gmail_service as gmail_service
-    import agents.case_desk_graph as case_desk_graph_module
+    import vertex_agent.intake as intake
+    import db.repository as repository
 
     monkeypatch.setattr(gmail_service, "read_email", fake_read_email)
     monkeypatch.setattr(gmail_service, "apply_message_labels", fake_apply_message_labels)
-    monkeypatch.setattr(
-        case_desk_graph_module.case_desk_graph,
-        "invoke",
-        lambda *args, **kwargs: {
-            "message_type": "josh_availability_reply",
-            "reservation_id": "res_1",
-            "_reservation": {"current_state": "READY_TO_OFFER_CLIENT"},
-            "final_response": "Ready to offer client.",
-        },
-    )
+    # The agent path: coordinate_email resolves the case; current_state comes from the reservation.
+    monkeypatch.setattr(intake, "coordinate_email", lambda **kwargs: {
+        "status": "coordinated",
+        "message_type": "josh_availability_reply",
+        "reservation_id": "res_1",
+        "proposed_action": {"action": "offer_client_slot"},
+        "agent_summary": "Ready to offer client.",
+    })
+    monkeypatch.setattr(repository, "get_reservation", lambda rid: {"current_state": "READY_TO_OFFER_CLIENT"})
 
     result = tastingroom_mailbox.process_gmail_message("msg_1", labels=[])
 
     assert result["state"] == "READY_TO_OFFER_CLIENT"
+    assert result["engine"] == "agent"
     assert "Tasting Room/Action Needed" in applied["add_labels"]
