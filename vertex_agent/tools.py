@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
 
 from db.models import Reservation
 from db.repository import (
@@ -96,6 +97,13 @@ def propose_action(reservation_id: str, action: str, rationale: str) -> dict:
     row = get_reservation(reservation_id)
     if not row:
         return {"ok": False, "error": f"No reservation {reservation_id}"}
+
+    # Dry-run guard (TR_AGENT_DRY_RUN=1): used during validation so a test run does
+    # NOT post a real approval card to the live Chat space or write a DB row.
+    if os.getenv("TR_AGENT_DRY_RUN", "").lower() in ("1", "true", "yes"):
+        log.info("[tr:agent:dry-run] would propose %s for %s — %s", action, reservation_id, rationale)
+        return {"ok": True, "dry_run": True, "action": action,
+                "note": f"DRY RUN — would post an approval card for '{action}' (no card sent)."}
 
     # Reconstruct the Reservation dataclass from the row (filter to known fields).
     fields = {f.name for f in dataclasses.fields(Reservation)}
