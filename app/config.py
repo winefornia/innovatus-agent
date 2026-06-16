@@ -15,22 +15,13 @@ SQUARE_ACCESS_TOKEN = os.getenv("SQUARE_ACCESS_TOKEN", "")
 SQUARE_LOCATION_ID = os.getenv("SQUARE_LOCATION_ID", "")
 SQUARE_ENVIRONMENT = os.getenv("SQUARE_ENVIRONMENT", "sandbox")
 
-# Telegram Bot — Invoice (FireHorse)
+# Telegram Bot — Invoice (FireHorse). The tasting-room approval flow no longer
+# uses Telegram; it runs entirely over Google Chat (see GOOGLE_CHAT_TR_* below).
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-# Telegram Bot — Tasting Room (separate bot)
-TELEGRAM_TASTINGROOM_BOT_TOKEN = os.getenv("TELEGRAM_TASTINGROOM_BOT_TOKEN", "")
-TELEGRAM_APPROVAL_CHAT_ID = os.getenv("TELEGRAM_APPROVAL_CHAT_ID", "")
 
 
 def _csv_env(name: str, default: str = "") -> list[str]:
     return [value.strip() for value in os.getenv(name, default).split(",") if value.strip()]
-
-
-TELEGRAM_TASTINGROOM_AUTHORIZED_CHAT_IDS = _csv_env(
-    "TELEGRAM_TASTINGROOM_AUTHORIZED_CHAT_IDS",
-    TELEGRAM_APPROVAL_CHAT_ID,
-)
-TELEGRAM_TASTINGROOM_AUTHORIZED_USER_IDS = _csv_env("TELEGRAM_TASTINGROOM_AUTHORIZED_USER_IDS")
 
 # Gmail OAuth (base64-encoded token.json; run scripts/google_auth.py to generate)
 GMAIL_TOKEN_JSON_B64 = os.getenv("GMAIL_TOKEN_JSON_B64", "")
@@ -64,6 +55,28 @@ GOOGLE_AUTHORIZED_ACCOUNTS = [
     ).split(",")
     if email.strip()
 ]
+
+# ── Tasting Room approvals over Google Chat ──────────────────────────────────
+# A SEPARATE Google Chat app (its own GCP project → its own bot identity),
+# pointed at a dedicated route on this same server. All four are config-gated:
+# when GOOGLE_CHAT_TR_SPACE is unset the Google Chat path stays dormant and
+# approvals keep flowing over Telegram, so the two channels can run in parallel
+# during cutover. See feat/tastingroom-google-chat.
+#   GOOGLE_CHAT_TR_SPACE              e.g. "spaces/AAAA…" — where cards post
+#   GOOGLE_TASTINGROOM_SA_JSON_B64    base64 of the TR project's SA key (posting)
+#   GOOGLE_CHAT_TR_AUDIENCE           the TR webhook URL (token aud check)
+#   GOOGLE_CHAT_TR_SIGNER_EMAIL       the TR project's gsuiteaddons SA
+#   GOOGLE_CHAT_TR_ENDPOINT_URL       URL card buttons call back into
+_TR_DEFAULT_URL = "https://winefornia-agent.fly.dev/webhooks/google-chat/tastingroom"
+GOOGLE_CHAT_TR_SPACE = os.getenv("GOOGLE_CHAT_TR_SPACE", "")
+# Posting key for the tasting-room Chat app (its own GCP project, #275073979299).
+GOOGLE_CHAT_TR_SERVICE_ACCOUNT_JSON_B64 = os.getenv("GOOGLE_TASTINGROOM_SA_JSON_B64", "")
+GOOGLE_CHAT_TR_AUDIENCE = os.getenv("GOOGLE_CHAT_TR_AUDIENCE", _TR_DEFAULT_URL)
+GOOGLE_CHAT_TR_SIGNER_EMAIL = os.getenv(
+    "GOOGLE_CHAT_TR_SIGNER_EMAIL",
+    "service-275073979299@gcp-sa-gsuiteaddons.iam.gserviceaccount.com",
+)
+GOOGLE_CHAT_TR_ENDPOINT_URL = os.getenv("GOOGLE_CHAT_TR_ENDPOINT_URL", _TR_DEFAULT_URL)
 
 # Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")

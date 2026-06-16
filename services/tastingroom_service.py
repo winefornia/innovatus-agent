@@ -18,7 +18,6 @@ from app.config import (
     JOSH_EMAIL,
     TASTINGROOM_SAFE_MODE,
     TASTINGROOM_TEST_RECIPIENT,
-    TELEGRAM_APPROVAL_CHAT_ID,
 )
 from db.models import (
     AvailabilityClaim,
@@ -1204,27 +1203,28 @@ def create_action_request(reservation: Reservation, action: str, source_message_
         email_subject=draft.get("subject"),
         email_body=draft.get("body"),
         recommendation=approval_message(reservation, action, draft),
-        telegram_chat_id=str(TELEGRAM_APPROVAL_CHAT_ID) if TELEGRAM_APPROVAL_CHAT_ID else None,
         source_message_id=source_message_id,
     )
-    from db.repository import insert_reservation_action, update_reservation_action
+    from db.repository import insert_reservation_action
 
     insert_reservation_action(request)
-    if TELEGRAM_APPROVAL_CHAT_ID:
-        try:
-            from services.telegram_service import send_inline_keyboard
+    rows = _rows_for_action(action, action_id)
 
-            resp = send_inline_keyboard(
-                TELEGRAM_APPROVAL_CHAT_ID,
-                request.recommendation or "",
-                _rows_for_action(action, action_id),
-                bot="tastingroom",
+    # Google Chat is the sole approval channel. Posts an interactive card to the
+    # configured space; if GOOGLE_CHAT_TR_SPACE is unset, the action is persisted
+    # (visible via /status and the activity page) but no card is pushed.
+    try:
+        from app.adapters.google_chat_tastingroom import is_enabled, post_action_card
+
+        if is_enabled():
+            post_action_card(action_id, request.recommendation or "", rows)
+        else:
+            logging.warning(
+                "[tastingroom] Google Chat approval channel not configured "
+                "(set GOOGLE_CHAT_TR_SPACE) — action %s saved but not pushed", action_id
             )
-            message_id = resp.get("result", {}).get("message_id")
-            if message_id:
-                update_reservation_action(action_id, telegram_message_id=str(message_id))
-        except Exception as exc:
-            logging.warning("[tastingroom] Telegram approval send failed: %s", exc)
+    except Exception as exc:
+        logging.warning("[tastingroom] Google Chat approval send failed: %s", exc)
     return action_id
 
 
