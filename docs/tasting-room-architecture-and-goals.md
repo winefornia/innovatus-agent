@@ -13,8 +13,19 @@ coordination channel with the facility coordinator "Josh", internal staff, and t
 client) with **Google Chat** as the human-approval surface. No outbound email is
 ever sent without a human approving a card.
 
-**The coordination goal for one reservation:** a single slot where the facility
-(Josh) + internal staff + the client all agree, then invoiced, paid, and confirmed.
+**The coordination goal for one reservation:** schedule a visit by coordinating up
+to three parties — **Cecil/Winefornia** (our side / winemaker), the **Customer**
+(the visiting guest; the reservation's `client_*` fields), and **Josh** (facility)
+— then invoice, take payment, and confirm.
+
+**Two case types** (from the Squarespace form):
+- **production_tour** — production tour + tasting WITH the winemaker; Cecil
+  *participates*, so the slot must align all THREE parties.
+- **standard** — normal tasting; Cecil does NOT participate, she only *approves*
+  (the Google Chat card is the approval gate); the slot is coordinated between
+  Josh + customer.
+
+**Party priority** when resolving what's next — always: **1) Cecil → 2) Customer → 3) Josh.**
 
 This goal is the new organizing principle — see §6.
 
@@ -96,19 +107,25 @@ agent's reasoning contract, not a discrete state transition.
 
 ## 6. Target: goal-oriented design (the rebuild)
 
-Replace the 23-state enum with **goal sub-conditions** (`vertex_agent/goal_model.py`):
+Replace the 23-state enum with **goal sub-conditions** (`vertex_agent/goal_model.py`),
+party-named and case-type aware:
 
 ```
-facility_availability : unknown | confirmed | unavailable
-internal_availability : unknown | confirmed | unavailable
-client_commitment     : none | offered | accepted | declined
-invoice               : not_sent | sent | paid
-confirmation          : not_sent | sent
+case_type           : production_tour | standard   (from experience_type)
+cecil_status        : unknown | ok | blocked        (ok = available for tour, OR approved for standard)
+customer_commitment : none | offered | accepted | declined
+josh_availability   : unknown | confirmed | unavailable
+invoice             : not_sent | sent | paid
+confirmation        : not_sent | sent
 ```
 
-The agent: load case → derive goal state → identify the biggest GAP → propose ONE
-next action (from SAFE_ACTIONS) via the approval card → human approves → Gmail send.
-No state machine; the "state" is a derived view of these conditions.
+Gaps are emitted in **party priority order: Cecil → Customer → Josh**. For
+`standard`, Cecil is approval-only (no scheduling); for `production_tour`, Cecil's
+availability must align with the slot (3-party).
+
+The agent: load case → derive goal state → take the FIRST (priority-ordered) GAP →
+propose ONE action (from SAFE_ACTIONS) via the approval card → human approves →
+Gmail send. No state machine; the "state" is a derived view of these conditions.
 
 Powered by **Claude** (ADK + LiteLLM), running in Google Chat + Gmail.
 

@@ -2,124 +2,170 @@
 
 Instead of routing on a discrete `current_state`, we describe the world as the
 sub-conditions of the coordination GOAL and let the agent reason about the
-biggest gap. This is a *modest* evolution of the existing `current_truth`
-judgment, not a rewrite: the conditions are derived from the same reservation
-fields and availability claims the current pipeline already produces.
+biggest gap, in a fixed party priority order.
 
-GOAL: one slot where facility (Josh) + internal staff + client all agree,
-      invoiced, paid, and confirmed.
+GOAL: schedule a tasting-room visit by coordinating up to three parties —
+  - CECIL / Winefornia (our side; the winemaker)
+  - CUSTOMER (the guest who wants to visit; stored in the reservation's client_* fields)
+  - JOSH (the facility coordinator at The Caves at Soda Canyon)
+…then invoice, take payment, and confirm.
+
+Two case types (from the Squarespace form / experience_type):
+  - PRODUCTION_TOUR: "production tour + tasting WITH the winemaker" — Cecil
+    PARTICIPATES, so the slot must align ALL THREE parties.
+  - STANDARD: a normal tasting — Cecil does NOT participate; she only APPROVES.
+    Scheduling is between two parties (Josh + customer), gated by Cecil's approval.
+
+Status-check priority (both cases): 1) Cecil  2) Customer  3) Josh.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-# ── Condition value vocabularies ─────────────────────────────────────────────
-UNKNOWN, CONFIRMED, UNAVAILABLE = "unknown", "confirmed", "unavailable"
+# ── Case types ───────────────────────────────────────────────────────────────
+PRODUCTION_TOUR = "production_tour"   # winemaker participates → 3-party schedule
+STANDARD = "standard"                 # Cecil approves only → Josh+customer schedule
+
+# ── Condition vocabularies ───────────────────────────────────────────────────
+# Cecil: "ok" means available-for-the-slot (PRODUCTION_TOUR) OR approved (STANDARD).
+UNKNOWN, OK, BLOCKED = "unknown", "ok", "blocked"
+# Josh availability.
+J_UNKNOWN, J_CONFIRMED, J_UNAVAILABLE = "unknown", "confirmed", "unavailable"
+# Customer commitment.
 NONE, OFFERED, ACCEPTED, DECLINED = "none", "offered", "accepted", "declined"
+# Money / closeout.
 NOT_SENT, SENT, PAID = "not_sent", "sent", "paid"
+
+
+def classify_case_type(reservation: dict) -> str:
+    """PRODUCTION_TOUR if the form requested the winemaker tour, else STANDARD."""
+    exp = ((reservation or {}).get("experience_type") or "").lower()
+    if any(kw in exp for kw in ("production", "tour", "winemaker")):
+        return PRODUCTION_TOUR
+    return STANDARD
 
 
 @dataclass
 class GoalState:
-    """Derived view of how close a reservation is to the coordination goal."""
+    """Derived view of how close a reservation is to a coordinated, confirmed visit."""
 
-    facility_availability: str = UNKNOWN   # unknown | confirmed | unavailable
-    internal_availability: str = UNKNOWN   # unknown | confirmed | unavailable
-    client_commitment: str = NONE          # none | offered | accepted | declined
-    invoice: str = NOT_SENT                # not_sent | sent | paid
-    confirmation: str = NOT_SENT           # not_sent | sent
+    case_type: str = STANDARD
+    cecil_status: str = UNKNOWN        # unknown | ok | blocked  (approval or availability)
+    customer_commitment: str = NONE    # none | offered | accepted | declined
+    josh_availability: str = J_UNKNOWN  # unknown | confirmed | unavailable
+    invoice: str = NOT_SENT            # not_sent | sent | paid
+    confirmation: str = NOT_SENT       # not_sent | sent
+
+    @property
+    def parties(self) -> list[str]:
+        """Who must be coordinated for this case (priority order)."""
+        return ["cecil", "customer", "josh"] if self.case_type == PRODUCTION_TOUR \
+            else ["cecil", "customer", "josh"]  # Cecil = approval-only in STANDARD, still checked first
 
     def is_goal_met(self) -> bool:
         return (
-            self.facility_availability == CONFIRMED
-            and self.internal_availability == CONFIRMED
-            and self.client_commitment == ACCEPTED
+            self.cecil_status == OK
+            and self.customer_commitment == ACCEPTED
+            and self.josh_availability == J_CONFIRMED
             and self.invoice == PAID
             and self.confirmation == SENT
         )
 
     def gaps(self) -> list[str]:
-        """Ordered list of what still blocks the goal — the agent closes the first."""
+        """Open gaps toward the goal, ORDERED by party priority: Cecil → Customer → Josh.
+
+        The LLM agent uses this as the priority hint; it still applies coordination
+        sense (e.g. don't offer the customer a slot before availability is known).
+        """
         g: list[str] = []
-        if self.facility_availability == UNAVAILABLE or self.internal_availability == UNAVAILABLE:
-            g.append("no_common_slot")  # needs alternatives / human attention
-        if self.facility_availability == UNKNOWN:
-            g.append("need_facility_availability")
-        if self.internal_availability == UNKNOWN:
-            g.append("need_internal_availability")
-        if (self.facility_availability == CONFIRMED
-                and self.internal_availability == CONFIRMED
-                and self.client_commitment in (NONE, DECLINED)):
-            g.append("offer_slot_to_client")
-        if self.client_commitment == ACCEPTED and self.invoice == NOT_SENT:
-            g.append("send_invoice")
-        if self.invoice == SENT:
-            g.append("await_or_check_payment")
-        if self.invoice == PAID and self.confirmation == NOT_SENT:
-            g.append("send_final_confirmation")
+        # Hard blocks first — a declined/unavailable party needs human attention.
+        if self.cecil_status == BLOCKED or self.josh_availability == J_UNAVAILABLE \
+                or self.customer_commitment == DECLINED:
+            g.append("blocked_needs_alternatives_or_escalation")
+
+        # 1) CECIL — approval (STANDARD) or availability (PRODUCTION_TOUR).
+        if self.cecil_status == UNKNOWN:
+            g.append("need_cecil_availability" if self.case_type == PRODUCTION_TOUR
+                     else "need_cecil_approval")
+        # 2) CUSTOMER — offer a slot / get acceptance.
+        if self.cecil_status == OK and self.customer_commitment in (NONE,):
+            g.append("offer_slot_to_customer")
+        # 3) JOSH — facility availability / booking.
+        if self.josh_availability == J_UNKNOWN:
+            g.append("need_josh_availability")
+
+        # Closeout (only once the visit is agreed).
+        if (self.cecil_status == OK and self.customer_commitment == ACCEPTED
+                and self.josh_availability == J_CONFIRMED):
+            if self.invoice == NOT_SENT:
+                g.append("send_invoice")
+            elif self.invoice == SENT:
+                g.append("await_or_check_payment")
+            elif self.invoice == PAID and self.confirmation == NOT_SENT:
+                g.append("send_final_confirmation")
         return g
 
 
 def derive_goal_state(reservation: dict, claims: list[dict]) -> GoalState:
-    """Map a reservation row + its availability claims onto the goal conditions.
-
-    Derived from existing fields (current_state, payment_status, booking_status)
-    plus actor-tagged claims, so adopting this does not require any data changes.
-    """
+    """Map a reservation row + its availability claims onto the goal conditions."""
     state = (reservation or {}).get("current_state", "") or ""
     payment = (reservation or {}).get("payment_status", "") or NOT_SENT
     booking = (reservation or {}).get("booking_status", "") or ""
+    case_type = classify_case_type(reservation)
+    gs = GoalState(case_type=case_type)
 
-    gs = GoalState()
+    def _claim_status(actors: set[str]) -> str | None:
+        rel = [c for c in claims if (c.get("actor") in actors)]
+        if any((c.get("claim_status") or "").lower() in ("unavailable", "declined") for c in rel):
+            return "blocked"
+        if any((c.get("claim_status") or "").lower() in ("available", "confirmed", "approved") for c in rel):
+            return "ok"
+        return None
 
-    # Facility / internal availability — prefer explicit claims, fall back to state.
-    def _availability(actors: set[str], confirmed_states: set[str], unavailable_states: set[str]) -> str:
-        relevant = [c for c in claims if (c.get("actor") in actors)]
-        if any((c.get("claim_status") or "").lower() in ("unavailable", "declined") for c in relevant):
-            return UNAVAILABLE
-        if any((c.get("claim_status") or "").lower() in ("available", "confirmed") for c in relevant):
-            return CONFIRMED
-        if state in unavailable_states:
-            return UNAVAILABLE
-        if state in confirmed_states:
-            return CONFIRMED
-        return UNKNOWN
+    # CECIL (our side / winemaker / internal).
+    cecil_claim = _claim_status({"cecil", "internal_staff", "internal", "winefornia"})
+    if cecil_claim == "blocked" or state in ("INTERNAL_UNAVAILABLE", "NO_COMMON_SLOT"):
+        gs.cecil_status = BLOCKED
+    elif cecil_claim == "ok" or state in (
+        "INTERNAL_AVAILABLE", "READY_TO_OFFER_CLIENT", "SLOT_OFFERED_TO_CLIENT",
+        "CLIENT_ACCEPTED_SLOT", "TENTATIVELY_BOOKED", "INVOICE_SENT",
+        "WAITING_FOR_PAYMENT", "PAYMENT_RECEIVED", "FINAL_CONFIRMED",
+    ):
+        gs.cecil_status = OK
+    else:
+        gs.cecil_status = UNKNOWN
 
-    gs.facility_availability = _availability(
-        {"josh", "facility"},
-        {"FACILITY_AVAILABLE", "READY_TO_OFFER_CLIENT", "SLOT_OFFERED_TO_CLIENT",
-         "CLIENT_ACCEPTED_SLOT", "TENTATIVELY_BOOKED", "INVOICE_SENT",
-         "WAITING_FOR_PAYMENT", "PAYMENT_RECEIVED", "FINAL_CONFIRMED"},
-        {"JOSH_UNAVAILABLE", "NO_COMMON_SLOT"},
-    )
-    gs.internal_availability = _availability(
-        {"internal_staff", "internal"},
-        {"INTERNAL_AVAILABLE", "READY_TO_OFFER_CLIENT", "SLOT_OFFERED_TO_CLIENT",
-         "CLIENT_ACCEPTED_SLOT", "TENTATIVELY_BOOKED", "INVOICE_SENT",
-         "WAITING_FOR_PAYMENT", "PAYMENT_RECEIVED", "FINAL_CONFIRMED"},
-        {"INTERNAL_UNAVAILABLE", "NO_COMMON_SLOT"},
-    )
+    # JOSH (facility).
+    josh_claim = _claim_status({"josh", "facility"})
+    if josh_claim == "blocked" or state in ("JOSH_UNAVAILABLE", "NO_COMMON_SLOT"):
+        gs.josh_availability = J_UNAVAILABLE
+    elif josh_claim == "ok" or state in (
+        "FACILITY_AVAILABLE", "READY_TO_OFFER_CLIENT", "SLOT_OFFERED_TO_CLIENT",
+        "CLIENT_ACCEPTED_SLOT", "TENTATIVELY_BOOKED", "INVOICE_SENT",
+        "WAITING_FOR_PAYMENT", "PAYMENT_RECEIVED", "FINAL_CONFIRMED",
+    ):
+        gs.josh_availability = J_CONFIRMED
+    else:
+        gs.josh_availability = J_UNKNOWN
 
-    # Client commitment.
+    # CUSTOMER (the visiting guest — reservation client_* fields).
     if state in ("CLIENT_ACCEPTED_SLOT", "TENTATIVELY_BOOKED", "INVOICE_SENT",
                  "WAITING_FOR_PAYMENT", "PAYMENT_RECEIVED", "FINAL_CONFIRMED"):
-        gs.client_commitment = ACCEPTED
+        gs.customer_commitment = ACCEPTED
     elif state == "SLOT_OFFERED_TO_CLIENT":
-        gs.client_commitment = OFFERED
-    elif state in ("CLIENT_REQUESTED_ALTERNATIVE",):
-        gs.client_commitment = DECLINED
+        gs.customer_commitment = OFFERED
+    elif state == "CLIENT_REQUESTED_ALTERNATIVE":
+        gs.customer_commitment = DECLINED
     else:
-        gs.client_commitment = NONE
+        gs.customer_commitment = NONE
 
-    # Invoice / payment.
+    # Money / confirmation.
     if payment in (PAID, "paid") or state in ("PAYMENT_RECEIVED", "FINAL_CONFIRMED"):
         gs.invoice = PAID
     elif payment in (SENT, "sent") or state in ("INVOICE_SENT", "WAITING_FOR_PAYMENT"):
         gs.invoice = SENT
     else:
         gs.invoice = NOT_SENT
-
-    # Final confirmation.
     gs.confirmation = SENT if (state == "FINAL_CONFIRMED" or booking in ("confirmed", "final_confirmed")) else NOT_SENT
     return gs
