@@ -7,6 +7,12 @@ Covers the migration-critical behaviors:
     resumes the channel-agnostic process_action_decision()
   - the channel is config-gated (dormant until GOOGLE_CHAT_TR_SPACE is set)
   - malformed / non-tr actions fail safe
+
+Plus the production hardening ported from google_chat_adapter.py:
+  - webhook-retry dedup (#2)
+  - ack-then-post deadline race: fast = sync, slow = ack + post (#1)
+  - outbound post retry on transient failure (#3)
+  - duplicate/retried click on an already-decided action stays silent
 """
 import asyncio
 
@@ -100,3 +106,110 @@ def test_disabled_without_service_account(monkeypatch):
     monkeypatch.setattr(tr.config, "GOOGLE_CHAT_TR_SERVICE_ACCOUNT_JSON_B64", "")
     monkeypatch.setenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "")
     assert tr.is_enabled() is False
+
+
+# ── #2 dedup ──────────────────────────────────────────────────────────────────
+def test_message_dedup():
+    tr._seen_messages.clear()
+    assert tr._already_seen("spaces/S/messages/m1") is False  # first sight
+    assert tr._already_seen("spaces/S/messages/m1") is True   # retry dropped
+    assert tr._already_seen("") is False                       # empty never dedups
+
+
+def test_retried_message_event_processed_once(monkeypatch):
+    tr._seen_messages.clear()
+    monkeypatch.setenv("GCHAT_ASYNC", "off")  # exercise the sync path
+    calls = []
+    import services.tastingroom_chat_service as chat
+    monkeypatch.setattr(chat, "handle_tastingroom_chat",
+                        lambda text, *, chat_id: calls.append(text) or "ok")
+
+    ev = {
+        "chat": {"user": {"email": "x@y.com"},
+                 "messagePayload": {"space": {"name": "spaces/S"},
+                                    "message": {"name": "spaces/S/messages/dup", "text": "status"}}},
+    }
+    asyncio.run(tr.handle_tastingroom_event(ev))
+    asyncio.run(tr.handle_tastingroom_event(ev))  # retry
+    assert calls == ["status"]  # processed exactly once
+
+
+# ── #1 ack-then-post deadline race ────────────────────────────────────────────
+def _classic_message():
+    return {"type": "MESSAGE", "space": {"name": "spaces/TEST"},
+            "message": {"name": "spaces/TEST/messages/m", "text": "hi"}}
+
+
+def test_fast_run_returns_sync_no_async_post(monkeypatch):
+    posts = []
+
+    async def fake_post(space, body):
+        posts.append((space, body)); return True
+
+    async def fast_route(ev):
+        return {"text": "FAST"}
+
+    monkeypatch.setattr(tr, "_post_message_to_space", fake_post)
+    monkeypatch.setattr(tr, "_route", fast_route)
+    monkeypatch.setattr(tr, "_ACK_DEADLINE", 0.5)
+
+    resp = asyncio.run(tr.handle_tastingroom_event(_classic_message()))
+    assert resp == {"text": "FAST"}   # classic (non-addon) returns the raw resp
+    assert posts == []                # fast path never posts async
+
+
+def test_slow_run_acks_then_posts_result(monkeypatch):
+    posts = []
+
+    async def fake_post(space, body):
+        posts.append((space, body)); return True
+
+    async def slow_route(ev):
+        await asyncio.sleep(0.4)
+        return {"text": "SLOW RESULT"}
+
+    monkeypatch.setattr(tr, "_post_message_to_space", fake_post)
+    monkeypatch.setattr(tr, "_route", slow_route)
+    monkeypatch.setattr(tr, "_ACK_DEADLINE", 0.1)
+
+    async def scenario():
+        resp = await tr.handle_tastingroom_event(_classic_message())
+        assert "Working on it" in resp["text"]   # acked synchronously
+        await asyncio.sleep(0.6)                  # let work + post finish
+        return resp
+
+    asyncio.run(scenario())
+    assert posts == [("spaces/TEST", {"text": "SLOW RESULT"})]  # delivered async, once
+
+
+# ── #3 outbound post retry ────────────────────────────────────────────────────
+def test_send_retries_then_succeeds(monkeypatch):
+    attempts = []
+
+    def flaky(space, body):
+        attempts.append(1)
+        if len(attempts) < 3:
+            return False, "503: transient"
+        return True, "spaces/S/messages/ok"
+
+    monkeypatch.setattr(tr, "_send_message", flaky)
+    monkeypatch.setattr(tr.time, "sleep", lambda *_: None)  # no real backoff in tests
+    name = tr._send_with_retry("spaces/S", {"text": "x"}, attempts=3)
+    assert name == "spaces/S/messages/ok"
+    assert len(attempts) == 3
+
+
+def test_send_gives_up_after_attempts(monkeypatch):
+    monkeypatch.setattr(tr, "_send_message", lambda s, b: (False, "500: boom"))
+    monkeypatch.setattr(tr.time, "sleep", lambda *_: None)
+    assert tr._send_with_retry("spaces/S", {"text": "x"}, attempts=2) is None
+
+
+# ── duplicate click on an already-decided action stays silent ─────────────────
+def test_retried_click_on_decided_action_is_silent(monkeypatch):
+    import services.tastingroom_service as svc
+    monkeypatch.setattr(svc, "process_action_decision",
+                        lambda *a, **k: {"ok": False, "error": "Action already approved."})
+    resp = asyncio.run(tr.handle_tastingroom_event(_addon_click("tr:abc:approve")))
+    # no card update, no posted message
+    assert resp == {} or resp.get("hostAppDataAction") is None
