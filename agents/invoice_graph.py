@@ -52,6 +52,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from typing import TypedDict, Literal, Any
 
@@ -414,6 +415,59 @@ def _adjust_confidence(extracted: dict, llm_conf: float, ambiguities: list) -> f
     return max(0.1, min(1.0, round(conf, 2)))
 
 
+_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+
+
+def _clarification_price_cents(text: str, exclude: str | None = None) -> int | None:
+    """Extract a per-bottle price (cents) from a free-text clarification reply.
+
+    A `$`-prefixed amount always wins. Otherwise a bare number counts as a price
+    only when it can't be a vintage year — it has decimals, or sits outside the
+    1900–2099 range — so "2023" is read as a vintage, not $2,023.
+    """
+    t = text.replace(",", "")
+    m = re.search(r"\$\s*(\d+(?:\.\d{1,2})?)", t)
+    if m:
+        return int(round(float(m.group(1)) * 100))
+    for m in re.finditer(r"\b(\d+(?:\.\d{1,2})?)\b", t):
+        tok = m.group(1)
+        if exclude is not None and tok == exclude:
+            continue
+        if "." in tok or not (1900 <= float(tok) <= 2099):
+            return int(round(float(tok) * 100))
+    return None
+
+
+def _apply_clarification_facts(text: str, extracted: dict) -> None:
+    """Fold a plain-text clarification (a stated price and/or vintage) into the
+    extracted items, so the value the operator already gave is not asked again.
+
+    Price is stored as `manual_price_cents` (per bottle, used as-is — matching the
+    confirm_item_prices semantics) and only when exactly one item still lacks a
+    price, to avoid mis-assigning it across a multi-item order. Vintage fills in
+    any item missing one.
+    """
+    items = extracted.get("items") or []
+    if not items:
+        return
+
+    year_m = _YEAR_RE.search(text)
+    if year_m:
+        vintage = int(year_m.group(0))
+        for it in items:
+            if not it.get("vintage"):
+                it["vintage"] = vintage
+
+    price_cents = _clarification_price_cents(text, exclude=year_m.group(0) if year_m else None)
+    if price_cents is not None:
+        unpriced = [
+            it for it in items
+            if not it.get("manual_price_cents") and not it.get("unit_price")
+        ]
+        if len(unpriced) == 1:
+            unpriced[0]["manual_price_cents"] = price_cents
+
+
 def ask_missing_fields(state: InvoiceState) -> InvoiceState:
     """Interrupt if required fields are missing OR confidence is too low.
 
@@ -451,10 +505,15 @@ def ask_missing_fields(state: InvoiceState) -> InvoiceState:
         updates = json.loads(response) if isinstance(response, str) else response
         if isinstance(updates, dict):
             existing.update(updates)
+        else:
+            raise ValueError("not a dict")
     except Exception:
-        # Plain text answer — fold back in as raw clarification
+        # Plain text answer — fold back in as raw clarification AND capture any
+        # price/vintage the operator stated, so we don't re-ask for the same
+        # value later (e.g. at confirm_item_prices).
         if response:
             existing["_clarification"] = str(response)
+            _apply_clarification_facts(str(response), existing)
 
     return {
         "extracted": existing,
