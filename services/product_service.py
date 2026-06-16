@@ -32,6 +32,48 @@ def _get_supabase():
 
 SHIPPING_WAIVER_THRESHOLD_CENTS = 150_000  # $1,500
 
+# Per-variety tier pricing (Retail Accounts SKU sheet).
+# The sheet lists an explicit bottle price per wine for each sales channel, and
+# those prices do NOT follow a single flat discount (FOB is ~45% off Viognier but
+# ~55% off Cabernet Sauvignon). When a product carries `tier_prices`, the channel
+# price is used AS-IS; otherwise we fall back to MSRP x the tier's flat multiplier.
+# Maps a pricing tier (pricing_tiers.json) -> the sheet column it draws from.
+# Tiers omitted here (Corporate, Corporate Lead, Other) always use the flat
+# multiplier — the sheet prices Corporate at a flat 20% with no per-variety column.
+# Employee -> ex_cellar: the sheet's "Ex-cellar" is the deepest internal price,
+# which is how the Employee tier is used in practice. Revisit with Cecil/Audrey
+# if that mapping changes.
+_TIER_SHEET_COLUMN: dict[str, str] = {
+    "Direct": "retail",
+    "Club Member": "club_member",
+    "Wholesale": "wholesale",
+    "Wholesale Ambassadors": "wholesale",
+    "FOB/Export": "fob",
+    "Employee": "ex_cellar",
+}
+
+
+def _sheet_tier_price_cents(product: dict, tier_name: str, msrp_cents: int) -> Optional[int]:
+    """Per-variety channel price (cents/bottle) from the sheet, or None to fall back.
+
+    Returns the exact sheet price for the product's variety in this tier's channel.
+    `retail`/Direct resolves to MSRP. Returns None when the tier has no sheet
+    column or the product carries no price for it (e.g. Pinot Noir has no FOB
+    price on the sheet) — the caller then applies the flat tier multiplier.
+    """
+    column = _TIER_SHEET_COLUMN.get(tier_name)
+    if column is None:  # tolerate non-canonical casing ("wholesale" vs "Wholesale")
+        column = next(
+            (c for t, c in _TIER_SHEET_COLUMN.items() if t.lower() == tier_name.lower()),
+            None,
+        )
+    if column is None:
+        return None
+    if column == "retail":
+        return msrp_cents
+    price = (product.get("tier_prices") or {}).get(column)
+    return int(price) if price is not None else None
+
 # Wine name aliases for natural language matching
 _ALIASES: dict[str, str] = {
     "cab": "cabernet sauvignon",
@@ -292,10 +334,21 @@ def calculate_invoice_prices(
             )
             continue
 
-        # PRIORITY 2 — catalog MSRP × tier multiplier.
+        # PRIORITY 2 — pricing from the catalog.
+        # 2a. A per-variety sheet price for this channel wins and is used AS-IS.
+        # 2b. Otherwise: catalog MSRP × the tier's flat multiplier.
         msrp_cents = product["msrp_bottle_cents"]
-        # round() avoids int(19500 * 0.7) = 13649 floating-point truncation bug
-        final_unit_price = round(msrp_cents * multiplier)
+        sheet_price = _sheet_tier_price_cents(product, tier_name, msrp_cents)
+        if sheet_price is not None:
+            final_unit_price = sheet_price
+            # effective discount off MSRP, shown on the invoice line
+            effective_discount = (
+                round((1 - final_unit_price / msrp_cents) * 100, 1) if msrp_cents else 0.0
+            )
+        else:
+            # round() avoids int(19500 * 0.7) = 13649 floating-point truncation bug
+            final_unit_price = round(msrp_cents * multiplier)
+            effective_discount = discount_pct
         line_total = round(final_unit_price * bottle_count)
 
         li = LineItem(
@@ -305,7 +358,7 @@ def calculate_invoice_prices(
             quantity=quantity,
             unit_type=unit_type,
             base_unit_price_cents=msrp_cents,
-            discount_percent=discount_pct,
+            discount_percent=effective_discount,
             final_unit_price_cents=final_unit_price,
             line_total_cents=line_total,
             bottles_per_case=bottles_per_case,

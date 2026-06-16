@@ -7,11 +7,17 @@
     "bottles_per_case": 12,
     "msrp_bottle_cents": 7500,
     "msrp_case_cents": 90000,
-    "inventory_cases": 18,
+    "inventory_cases": 38,
     "tier_unavailable": [
       "Wholesale"
     ],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 6400,
+      "wholesale": 5300,
+      "fob": 4100,
+      "ex_cellar": 3800
+    }
   },
   {
     "name": "Viognier",
@@ -23,7 +29,13 @@
     "msrp_case_cents": 90000,
     "inventory_cases": 123,
     "tier_unavailable": [],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 6400,
+      "wholesale": 5300,
+      "fob": 4100,
+      "ex_cellar": 3800
+    }
   },
   {
     "name": "Viognier",
@@ -72,14 +84,20 @@
     "vintage": 2020,
     "size": "750ml",
     "bottles_per_case": 12,
-    "msrp_bottle_cents": 4500,
-    "msrp_case_cents": 54000,
+    "msrp_bottle_cents": 3800,
+    "msrp_case_cents": 45600,
     "inventory_cases": 8,
     "tier_unavailable": [
       "Corporate",
       "Club Member"
     ],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 3200,
+      "wholesale": 3000,
+      "fob": 2100,
+      "ex_cellar": 2000
+    }
   },
   {
     "name": "Chardonnay",
@@ -87,14 +105,20 @@
     "vintage": 2025,
     "size": "750ml",
     "bottles_per_case": 12,
-    "msrp_bottle_cents": 2800,
-    "msrp_case_cents": 33600,
+    "msrp_bottle_cents": 3800,
+    "msrp_case_cents": 45600,
     "inventory_cases": 68,
     "tier_unavailable": [
       "Corporate",
       "Club Member"
     ],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 3200,
+      "wholesale": 3000,
+      "fob": 2100,
+      "ex_cellar": 2000
+    }
   },
   {
     "name": "Brut Sparkling",
@@ -104,9 +128,15 @@
     "bottles_per_case": 12,
     "msrp_bottle_cents": 8500,
     "msrp_case_cents": 102000,
-    "inventory_cases": 32,
+    "inventory_cases": 36,
     "tier_unavailable": [],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 7200,
+      "wholesale": 6000,
+      "fob": 4700,
+      "ex_cellar": 4500
+    }
   },
   {
     "name": "Brut Sparkling",
@@ -118,7 +148,13 @@
     "msrp_case_cents": 102000,
     "inventory_cases": 111,
     "tier_unavailable": [],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 7200,
+      "wholesale": 6000,
+      "fob": 4700,
+      "ex_cellar": 4500
+    }
   },
   {
     "name": "Brut Sparkling",
@@ -130,7 +166,13 @@
     "msrp_case_cents": 102000,
     "inventory_cases": 75,
     "tier_unavailable": [],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 7200,
+      "wholesale": 6000,
+      "fob": 4700,
+      "ex_cellar": 4500
+    }
   },
   {
     "name": "Sparkling Rose",
@@ -140,9 +182,15 @@
     "bottles_per_case": 12,
     "msrp_bottle_cents": 2800,
     "msrp_case_cents": 33600,
-    "inventory_cases": 197,
+    "inventory_cases": 209,
     "tier_unavailable": [],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 2400,
+      "wholesale": 2000,
+      "fob": 1500,
+      "ex_cellar": 1500
+    }
   },
   {
     "name": "Rose (shiner)",
@@ -162,11 +210,17 @@
     "vintage": 2022,
     "size": "750ml",
     "bottles_per_case": 12,
-    "msrp_bottle_cents": 3200,
-    "msrp_case_cents": 38400,
-    "inventory_cases": 37,
+    "msrp_bottle_cents": 4500,
+    "msrp_case_cents": 54000,
+    "inventory_cases": 41,
     "tier_unavailable": [],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 3800,
+      "wholesale": 3200,
+      "fob": 2500,
+      "ex_cellar": 2300
+    }
   },
   {
     "name": "Rose",
@@ -174,14 +228,20 @@
     "vintage": 2025,
     "size": "750ml",
     "bottles_per_case": 12,
-    "msrp_bottle_cents": 3200,
-    "msrp_case_cents": 38400,
+    "msrp_bottle_cents": 4500,
+    "msrp_case_cents": 54000,
     "inventory_cases": 0,
     "tier_unavailable": [
       "Corporate",
       "Club Member"
     ],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 3800,
+      "wholesale": 3200,
+      "fob": 2500,
+      "ex_cellar": 2300
+    }
   },
   {
     "name": "Zinfandel",
@@ -191,9 +251,15 @@
     "bottles_per_case": 12,
     "msrp_bottle_cents": 4500,
     "msrp_case_cents": 54000,
-    "inventory_cases": 125,
+    "inventory_cases": 130,
     "tier_unavailable": [],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 3800,
+      "wholesale": 3200,
+      "fob": 2500,
+      "ex_cellar": 2300
+    }
   },
   {
     "name": "Zinfandel",
@@ -203,9 +269,15 @@
     "bottles_per_case": 12,
     "msrp_bottle_cents": 4500,
     "msrp_case_cents": 54000,
-    "inventory_cases": 85,
+    "inventory_cases": 88,
     "tier_unavailable": [],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 3800,
+      "wholesale": 3200,
+      "fob": 2500,
+      "ex_cellar": 2300
+    }
   },
   {
     "name": "Pinot Noir",
@@ -213,14 +285,18 @@
     "vintage": 2024,
     "size": "750ml",
     "bottles_per_case": 12,
-    "msrp_bottle_cents": 4800,
-    "msrp_case_cents": 57600,
+    "msrp_bottle_cents": 7500,
+    "msrp_case_cents": 90000,
     "inventory_cases": 192,
     "tier_unavailable": [
       "Corporate",
       "Club Member"
     ],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 6400,
+      "wholesale": 6000
+    }
   },
   {
     "name": "Cuvee Red",
@@ -230,9 +306,15 @@
     "bottles_per_case": 12,
     "msrp_bottle_cents": 6500,
     "msrp_case_cents": 78000,
-    "inventory_cases": 212,
+    "inventory_cases": 285,
     "tier_unavailable": [],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 5500,
+      "wholesale": 5200,
+      "fob": 4600,
+      "ex_cellar": 4500
+    }
   },
   {
     "name": "Cuvee Red",
@@ -240,11 +322,17 @@
     "vintage": 2014,
     "size": "750ml",
     "bottles_per_case": 12,
-    "msrp_bottle_cents": 9500,
-    "msrp_case_cents": 114000,
-    "inventory_cases": 24,
+    "msrp_bottle_cents": 8500,
+    "msrp_case_cents": 102000,
+    "inventory_cases": 107,
     "tier_unavailable": [],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 7200,
+      "wholesale": 6800,
+      "fob": 6000,
+      "ex_cellar": 5500
+    }
   },
   {
     "name": "Cuvee Red",
@@ -252,14 +340,20 @@
     "vintage": 2014,
     "size": "750ml",
     "bottles_per_case": 12,
-    "msrp_bottle_cents": 12500,
-    "msrp_case_cents": 150000,
+    "msrp_bottle_cents": 8500,
+    "msrp_case_cents": 102000,
     "inventory_cases": 34,
     "tier_unavailable": [
       "FOB/Export",
       "Wholesale"
     ],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 7200,
+      "wholesale": 6800,
+      "fob": 6000,
+      "ex_cellar": 5500
+    }
   },
   {
     "name": "Red Blend",
@@ -286,7 +380,13 @@
     "msrp_case_cents": 150000,
     "inventory_cases": 42,
     "tier_unavailable": [],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 10600,
+      "wholesale": 8800,
+      "fob": 6900,
+      "ex_cellar": 6200
+    }
   },
   {
     "name": "Cabernet Franc",
@@ -298,7 +398,13 @@
     "msrp_case_cents": 150000,
     "inventory_cases": 42,
     "tier_unavailable": [],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 10600,
+      "wholesale": 8800,
+      "fob": 6900,
+      "ex_cellar": 6200
+    }
   },
   {
     "name": "Cabernet Franc",
@@ -310,7 +416,13 @@
     "msrp_case_cents": 150000,
     "inventory_cases": 42,
     "tier_unavailable": [],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 10600,
+      "wholesale": 8800,
+      "fob": 6900,
+      "ex_cellar": 6200
+    }
   },
   {
     "name": "Cabernet Franc",
@@ -320,9 +432,15 @@
     "bottles_per_case": 12,
     "msrp_bottle_cents": 12500,
     "msrp_case_cents": 150000,
-    "inventory_cases": 24,
+    "inventory_cases": 26,
     "tier_unavailable": [],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 10600,
+      "wholesale": 8800,
+      "fob": 6900,
+      "ex_cellar": 6200
+    }
   },
   {
     "name": "Cabernet Franc",
@@ -334,7 +452,13 @@
     "msrp_case_cents": 150000,
     "inventory_cases": 15,
     "tier_unavailable": [],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 10600,
+      "wholesale": 8800,
+      "fob": 6900,
+      "ex_cellar": 6200
+    }
   },
   {
     "name": "Cabernet Sauvignon (shiners)",
@@ -371,9 +495,15 @@
     "bottles_per_case": 12,
     "msrp_bottle_cents": 19500,
     "msrp_case_cents": 234000,
-    "inventory_cases": 54,
+    "inventory_cases": 102,
     "tier_unavailable": [],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 16600,
+      "wholesale": 11700,
+      "fob": 8800,
+      "ex_cellar": 7800
+    }
   },
   {
     "name": "Cabernet Sauvignon",
@@ -385,7 +515,13 @@
     "msrp_case_cents": 234000,
     "inventory_cases": 48,
     "tier_unavailable": [],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 16600,
+      "wholesale": 11700,
+      "fob": 8800,
+      "ex_cellar": 7800
+    }
   },
   {
     "name": "Cabernet Sauvignon (shiners)",
@@ -395,7 +531,7 @@
     "bottles_per_case": 12,
     "msrp_bottle_cents": null,
     "msrp_case_cents": null,
-    "inventory_cases": 96,
+    "inventory_cases": 125,
     "tier_unavailable": [],
     "variable_pricing": true
   },
@@ -407,7 +543,7 @@
     "bottles_per_case": 12,
     "msrp_bottle_cents": null,
     "msrp_case_cents": null,
-    "inventory_cases": 29,
+    "inventory_cases": 428,
     "tier_unavailable": [],
     "variable_pricing": true
   },
@@ -419,9 +555,15 @@
     "bottles_per_case": 12,
     "msrp_bottle_cents": 19500,
     "msrp_case_cents": 234000,
-    "inventory_cases": 1,
+    "inventory_cases": 19,
     "tier_unavailable": [],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 16600,
+      "wholesale": 11700,
+      "fob": 8800,
+      "ex_cellar": 7800
+    }
   },
   {
     "name": "Cabernet Sauvignon",
@@ -431,9 +573,15 @@
     "bottles_per_case": 12,
     "msrp_bottle_cents": 19500,
     "msrp_case_cents": 234000,
-    "inventory_cases": 33,
+    "inventory_cases": 44,
     "tier_unavailable": [],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 16600,
+      "wholesale": 11700,
+      "fob": 8800,
+      "ex_cellar": 7800
+    }
   },
   {
     "name": "Cabernet Sauvignon",
@@ -445,7 +593,13 @@
     "msrp_case_cents": 234000,
     "inventory_cases": 26,
     "tier_unavailable": [],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 16600,
+      "wholesale": 11700,
+      "fob": 8800,
+      "ex_cellar": 7800
+    }
   },
   {
     "name": "Cabernet Sauvignon",
@@ -455,9 +609,15 @@
     "bottles_per_case": 12,
     "msrp_bottle_cents": 19500,
     "msrp_case_cents": 234000,
-    "inventory_cases": 49,
+    "inventory_cases": 107,
     "tier_unavailable": [],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 16600,
+      "wholesale": 11700,
+      "fob": 8800,
+      "ex_cellar": 7800
+    }
   },
   {
     "name": "Cabernet Sauvignon",
@@ -469,6 +629,12 @@
     "msrp_case_cents": 234000,
     "inventory_cases": 55,
     "tier_unavailable": [],
-    "variable_pricing": false
+    "variable_pricing": false,
+    "tier_prices": {
+      "club_member": 16600,
+      "wholesale": 11700,
+      "fob": 8800,
+      "ex_cellar": 7800
+    }
   }
 ]
