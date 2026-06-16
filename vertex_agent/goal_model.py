@@ -42,7 +42,10 @@ NOT_SENT, SENT, PAID = "not_sent", "sent", "paid"
 # makes a case 3-party. The selection arrives in the form EMAIL body (HTML), which
 # the legacy pipeline did not persist to a structured field — so classify across
 # every text field we have, keyword-robust, rather than trusting experience_type.
-_TOUR_KEYWORDS = ("production tour", "winemaker", "tour + wine", "tour and wine")
+# Squarespace dropdown labels (exact):
+#   standard        → "Tasting ($85 per person)"
+#   production_tour → "Production Tour and Tasting with Winemaker ($110 per person)"
+_TOUR_KEYWORDS = ("production tour", "tour and tasting with winemaker", "winemaker", "$110 per person")
 
 
 def classify_case_type(reservation: dict, *, source_text: str = "") -> str:

@@ -157,26 +157,59 @@ def process_gmail_message(message_id: str, *, labels: list[str] | None = None) -
     if not full_text:
         return {"message_id": message_id, "status": "skipped", "reason": "empty_message"}
 
-    from agents.case_desk_graph import case_desk_graph
+    import os
 
     thread_id = f"tasting_{thread or message_id[:12]}"
-    result = case_desk_graph.invoke(
-        {
-            "raw_email": full_text,
-            "sender_id": sender,
-            "subject": subject,
-            "from_email": sender,
-            "to_email": to_email,
-            "body": body,
-            "gmail_message_id": message_id,
-            "gmail_thread_id": thread,
-        },
-        config={"configurable": {"thread_id": thread_id}},
-    )
 
-    message_type = result.get("message_type")
-    reservation = result.get("_reservation") or {}
-    current_state = result.get("current_state") or reservation.get("current_state")
+    if os.getenv("TASTINGROOM_USE_AGENT", "").lower() in ("1", "true", "yes"):
+        # Goal-oriented agent path (parallel rebuild). Old graph stays the default
+        # fallback until this is proven; flip TASTINGROOM_USE_AGENT to cut over.
+        from vertex_agent.intake import coordinate_email
+
+        agent_result = coordinate_email(
+            subject=subject, sender=sender, body=body, to_email=to_email,
+            gmail_message_id=message_id, gmail_thread_id=thread,
+        )
+        message_type = agent_result.get("message_type")
+        reservation_id = agent_result.get("reservation_id")
+        current_state = None
+        if reservation_id:
+            from db.repository import get_reservation
+            current_state = (get_reservation(reservation_id) or {}).get("current_state")
+        proposed = agent_result.get("proposed_action") or {}
+        result_meta = {
+            "reservation_id": reservation_id,
+            "action_id": None,
+            "response": agent_result.get("agent_summary"),
+            "proposed_action": proposed.get("action"),
+            "engine": "agent",
+        }
+    else:
+        from agents.case_desk_graph import case_desk_graph
+
+        result = case_desk_graph.invoke(
+            {
+                "raw_email": full_text,
+                "sender_id": sender,
+                "subject": subject,
+                "from_email": sender,
+                "to_email": to_email,
+                "body": body,
+                "gmail_message_id": message_id,
+                "gmail_thread_id": thread,
+            },
+            config={"configurable": {"thread_id": thread_id}},
+        )
+        message_type = result.get("message_type")
+        reservation = result.get("_reservation") or {}
+        current_state = result.get("current_state") or reservation.get("current_state")
+        result_meta = {
+            "reservation_id": result.get("reservation_id"),
+            "action_id": result.get("action_id"),
+            "response": result.get("final_response"),
+            "engine": "graph",
+        }
+
     applied_labels = labels_for_result(message_type, current_state)
     apply_message_labels(
         message_id,
@@ -190,11 +223,9 @@ def process_gmail_message(message_id: str, *, labels: list[str] | None = None) -
         "subject": subject,
         "thread_id": thread_id,
         "message_type": message_type,
-        "reservation_id": result.get("reservation_id"),
         "state": current_state,
-        "action_id": result.get("action_id"),
         "labels": applied_labels,
-        "response": result.get("final_response"),
+        **result_meta,
     }
 
 

@@ -80,7 +80,13 @@ def list_open_cases() -> list[dict]:
     return out
 
 
-def propose_action(reservation_id: str, action: str, rationale: str) -> dict:
+# Below this confidence the action is forced to "escalate" (staff review),
+# regardless of what the agent chose — ports services/safety_guards.py's <0.6 rule
+# into the tool layer so it's deterministic, not LLM-trusted.
+_MIN_CONFIDENCE = 0.6
+
+
+def propose_action(reservation_id: str, action: str, rationale: str, confidence: float = 1.0) -> dict:
     """Propose the next coordination action. This DOES NOT send anything — it
     creates an approval request and posts the Google Chat card for a human to
     approve or reject. Use this for every facility/client/payment-facing step.
@@ -91,9 +97,18 @@ def propose_action(reservation_id: str, action: str, rationale: str) -> dict:
             "offer_client_slot", "send_tentative_invoice", "send_final_confirmation",
             "escalate").
         rationale: one sentence on why this is the next-best step toward the goal.
+        confidence: 0–1 confidence in this action. Below 0.6 the action is forced
+            to "escalate" for staff review (hard safety rule, not a suggestion).
     """
     if action not in ALLOWED_ACTIONS:
         return {"ok": False, "error": f"action must be one of {sorted(ALLOWED_ACTIONS)}"}
+
+    # Confidence guard — low-confidence actions become staff escalations.
+    if confidence < _MIN_CONFIDENCE and action != "escalate":
+        log.info("[tr:agent] confidence %.2f < %.2f — downgrading %s → escalate (%s)",
+                 confidence, _MIN_CONFIDENCE, action, reservation_id)
+        action = "escalate"
+        rationale = f"[low confidence {confidence:.2f}] {rationale}"
     row = get_reservation(reservation_id)
     if not row:
         return {"ok": False, "error": f"No reservation {reservation_id}"}
