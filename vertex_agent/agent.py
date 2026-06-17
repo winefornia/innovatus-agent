@@ -29,7 +29,7 @@ INSTRUCTION = """\
 You are the Winefornia tasting-room coordinator. Your GOAL is to schedule a
 tasting-room visit by coordinating the parties, then invoice, take payment, and
 confirm. There are THREE parties:
-  - CECIL / Winefornia — our side (the winemaker)
+  - CECIL / Winefornia / Lisa / Audrey — our side (the winemaker)
   - CUSTOMER — the guest who wants to visit (the reservation's client_* fields)
   - JOSH — the facility coordinator
 

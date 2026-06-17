@@ -7,7 +7,9 @@
 -- ============================================================
 
 create or replace function update_updated_at()
-returns trigger language plpgsql as $$
+returns trigger language plpgsql
+set search_path = ''                       -- linter 0011: pin search_path
+as $$
 begin
     new.updated_at = now();
     return new;
@@ -378,3 +380,36 @@ create index if not exists reservation_action_requests_created_idx     on reserv
 create or replace trigger reservation_action_requests_updated_at
     before update on reservation_action_requests
     for each row execute function update_updated_at();
+
+
+-- ============================================================
+-- ROW LEVEL SECURITY
+-- ============================================================
+-- Every table in this schema is reached only through the backend using the
+-- service_role key (SUPABASE_SERVICE_KEY), which bypasses RLS. Enabling RLS
+-- with NO policies therefore denies all anon / authenticated access via
+-- PostgREST while leaving the backend untouched — the secure default, and
+-- what the Supabase linter (0013_rls_disabled_in_public) requires.
+-- These statements are idempotent.
+
+alter table pricing_tiers               enable row level security;
+alter table customers                   enable row level security;
+alter table products                    enable row level security;
+alter table square_orders               enable row level security;
+alter table square_invoices             enable row level security;
+alter table invoice_logs                enable row level security;
+alter table sync_state                  enable row level security;
+alter table agent_cases                 enable row level security;
+alter table trace_events                enable row level security;
+alter table failure_labels              enable row level security;
+alter table reservations                enable row level security;
+alter table availability_claims         enable row level security;
+alter table reservation_events          enable row level security;
+alter table reservation_action_requests enable row level security;
+
+-- Tables created outside this file (control/eval layer + LangGraph checkpointer
+-- orphans) also have RLS enabled directly on the project; see migration
+-- enable_rls_on_public_tables:
+--   unresolved_reservation_events, case_judgments, raw_email_events,
+--   validation_results, execution_results, workflow_records,
+--   checkpoint_migrations, checkpoints, checkpoint_blobs, checkpoint_writes
