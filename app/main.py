@@ -316,6 +316,19 @@ def _verify_google_chat_token(
     return True, "ok (addon JWT: aud + signer verified)"
 
 
+async def _safe_event_json(request: Request) -> Optional[dict]:
+    """Parse a webhook body, returning None instead of raising on bad/empty JSON.
+
+    Google Chat retries any non-2xx response, so a malformed body must not 500 —
+    we ack with 200 and drop it rather than invite a retry storm.
+    """
+    try:
+        data = await request.json()
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
 @app.post("/webhooks/google-chat")
 async def google_chat_webhook(request: Request):
     _log = logging.getLogger("winefornia.main")
@@ -329,7 +342,10 @@ async def google_chat_webhook(request: Request):
         if mode == "enforce" and not ok:
             return JSONResponse({"error": "unauthorized"}, status_code=401)
 
-    event = await request.json()
+    event = await _safe_event_json(request)
+    if event is None:
+        _log.warning("[gc:webhook] unparseable body — acking empty")
+        return {}
     # Diagnostic: surface the raw event shape so we can tell why messages
     # may not be routed (legacy vs newer Chat payload formats).
     try:
@@ -369,12 +385,48 @@ async def google_chat_tastingroom_webhook(request: Request):
         if mode == "enforce" and not ok:
             return JSONResponse({"error": "unauthorized"}, status_code=401)
 
-    event = await request.json()
+    event = await _safe_event_json(request)
+    if event is None:
+        _log.warning("[tr:gc:webhook] unparseable body — acking empty")
+        return {}
     return await handle_tastingroom_event(event)
+
+
+@app.post("/webhooks/google-chat/invoice-chat")
+async def google_chat_invoice_chat_webhook(request: Request):
+    """Conversational invoicing assistant — a SIBLING to /webhooks/google-chat.
+
+    The invoice graph keeps running on the main route; this route is the free-form
+    chat brain (vertex_agent.invoice_chat_agent) that understands intent and acts
+    through confirm-first tools. Verified against its own audience + signer when
+    configured, then dispatched to the invoice-chat adapter.
+    """
+    from app.config import GOOGLE_CHAT_INVCHAT_AUDIENCE, GOOGLE_CHAT_INVCHAT_SIGNER_EMAIL
+    from app.adapters.google_chat_invoice_chat import handle_invoice_chat_event
+    _log = logging.getLogger("winefornia.main")
+    mode = (os.getenv("GCHAT_VERIFY", "observe") or "observe").lower()
+
+    if mode != "off":
+        ok, reason = await asyncio.to_thread(
+            _verify_google_chat_token,
+            request.headers.get("authorization", ""),
+            GOOGLE_CHAT_INVCHAT_AUDIENCE,
+            GOOGLE_CHAT_INVCHAT_SIGNER_EMAIL or None,
+        )
+        _log.info("[inv:gc:auth] %s — %s (mode=%s)", "ok" if ok else "FAILED", reason, mode)
+        if mode == "enforce" and not ok:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    event = await _safe_event_json(request)
+    if event is None:
+        _log.warning("[inv:gc:webhook] unparseable body — acking empty")
+        return {}
+    return await handle_invoice_chat_event(event)
 
 
 @app.get("/webhooks/google-chat")
 @app.get("/webhooks/google-chat/tastingroom")
+@app.get("/webhooks/google-chat/invoice-chat")
 async def google_chat_webhook_healthcheck():
     """200 for Google's Workspace Add-on endpoint reachability pings (GET), which
     would otherwise log as 405 noise. Real Chat events always arrive via POST."""
@@ -401,6 +453,31 @@ def activity_page(request: Request, limit: int = 20, key: str = ""):
     return HTMLResponse(content=render_html_activity_page(limit=limit))
 
 
+@app.on_event("startup")
+async def _start_heartbeat_monitor():
+    """Launch the tasting-room watcher-liveness monitor in the web process so a
+    silent/dead watcher gets surfaced as a Google Chat alert. Disable with
+    TR_HEARTBEAT_MONITOR=off."""
+    if (os.getenv("TR_HEARTBEAT_MONITOR", "on") or "on").lower() == "off":
+        return
+    from services.heartbeat_monitor import run_monitor
+    asyncio.create_task(run_monitor())
+
+
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "winefornia-invoice-agent"}
+    """Liveness + watcher freshness. Returns 503 when the tasting-room watcher's
+    heartbeat is stale, so an external uptime monitor can also catch it."""
+    from services.heartbeat_monitor import _STALE_SECONDS, heartbeat_age_seconds
+
+    age = heartbeat_age_seconds()
+    watcher = "unknown" if age is None else ("ok" if age <= _STALE_SECONDS else "stale")
+    body = {
+        "status": "ok",
+        "service": "winefornia-invoice-agent",
+        "tastingroom_watcher": watcher,
+        "watcher_heartbeat_age_seconds": None if age is None else round(age, 1),
+    }
+    if watcher == "stale":
+        return JSONResponse(status_code=503, content={**body, "status": "degraded"})
+    return body

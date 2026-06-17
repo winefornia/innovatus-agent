@@ -40,7 +40,17 @@ SCOPES = [
 ]
 
 _service = None
-_claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+# Lazy + timeout-bounded — see services/pdf_service.py. Import-time construction
+# would crash the whole web process when ANTHROPIC_API_KEY is unset/invalid.
+_CLAUDE_TIMEOUT = float(os.getenv("GMAIL_CLAUDE_TIMEOUT", "60"))
+_claude = None
+
+
+def _get_claude() -> "anthropic.Anthropic":
+    global _claude
+    if _claude is None:
+        _claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=_CLAUDE_TIMEOUT)
+    return _claude
 
 
 # ---------------------------------------------------------------------------
@@ -473,7 +483,7 @@ Sign off as "Winefornia Team".
 Return JSON with keys "subject", "html" (full HTML email body), and "plain" (plain text version).
 No markdown fences."""
 
-    resp = _claude.messages.create(
+    resp = _get_claude().messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=1500,
         messages=[{"role": "user", "content": prompt}],

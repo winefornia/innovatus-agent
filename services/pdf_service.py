@@ -4,19 +4,32 @@ Supports both digital PDFs (native text) and scanned PDFs (vision OCR).
 No extra system deps — Claude handles it all.
 """
 import base64
+import os
 
 import anthropic
 
 from app.config import ANTHROPIC_API_KEY
 
-_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+# Lazy + timeout-bounded. Building the client at import time crashes the WHOLE
+# web process if ANTHROPIC_API_KEY is unset/invalid; deferring it means only PDF
+# extraction degrades. The 60s timeout caps a hung Claude call (SDK default is
+# 600s) so a bad PDF can't pin a thread-pool worker for ten minutes.
+_PDF_TIMEOUT = float(os.getenv("PDF_EXTRACT_TIMEOUT", "60"))
+_client = None
 _MODEL = "claude-haiku-4-5-20251001"
+
+
+def _get_client() -> "anthropic.Anthropic":
+    global _client
+    if _client is None:
+        _client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, timeout=_PDF_TIMEOUT)
+    return _client
 
 
 def extract_text_from_pdf(pdf_bytes: bytes) -> str:
     """Return all text extracted from a PDF, using Claude as the OCR engine."""
     b64 = base64.standard_b64encode(pdf_bytes).decode()
-    response = _client.messages.create(
+    response = _get_client().messages.create(
         model=_MODEL,
         max_tokens=4096,
         messages=[{
@@ -49,7 +62,7 @@ def extract_invoice_fields_from_pdf(pdf_bytes: bytes) -> str:
     Returns text ready to be fed directly into the invoice graph as raw_message.
     """
     b64 = base64.standard_b64encode(pdf_bytes).decode()
-    response = _client.messages.create(
+    response = _get_client().messages.create(
         model=_MODEL,
         max_tokens=1024,
         messages=[{
