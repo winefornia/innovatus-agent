@@ -39,8 +39,6 @@ _INTENT_RISK: dict[str, str] = {
     "event_invoice":   "high",       # bulk action, many customers
     "outreach":        "medium",     # external comms
     "invoice_creation": "medium",
-    "tastingroom_reservation": "medium",
-    "tastingroom_order": "medium",
     "invoice_status":  "low",
     "customer_lookup": "low",
     "general_chat":    "low",

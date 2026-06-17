@@ -224,19 +224,6 @@ class ExecutionResultRecord:
 
 
 @dataclass
-class CaseJudgmentRecord:
-    """Persisted snapshot of a CaseJudgment — one row per email processed."""
-
-    case_id: str
-    source_message_id: str = ""
-    judgment_json: dict = field(default_factory=dict)
-    confidence: float = 0.0
-    next_best_action: str = ""
-    interrupt_level: str = "none"
-    record_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-
-
-@dataclass
 class UnresolvedEvent:
     """An inbound email that could not be confidently matched to a reservation."""
 

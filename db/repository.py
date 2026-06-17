@@ -7,7 +7,6 @@ from app.config import SUPABASE_URL, SUPABASE_SERVICE_KEY
 from db.models import (
     AvailabilityClaim,
     Case,
-    CaseJudgmentRecord,
     ExecutionResultRecord,
     FailureLabel,
     InvoiceLog,
@@ -358,37 +357,6 @@ def get_reservation_action(action_id: str) -> Optional[dict]:
 def update_reservation_action(action_id: str, **fields) -> None:
     client = _get_client()
     client.table("reservation_action_requests").update(fields).eq("action_id", action_id).execute()
-
-
-# ---------------------------------------------------------------------------
-# Case judgments
-# ---------------------------------------------------------------------------
-
-def insert_case_judgment(record: CaseJudgmentRecord) -> None:
-    client = _get_client()
-    client.table("case_judgments").insert({
-        "record_id": record.record_id,
-        "case_id": record.case_id,
-        "source_message_id": record.source_message_id or None,
-        "judgment_json": record.judgment_json or {},
-        "confidence": record.confidence,
-        "next_best_action": record.next_best_action or None,
-        "interrupt_level": record.interrupt_level,
-    }).execute()
-
-
-def get_latest_case_judgment(case_id: str) -> Optional[dict]:
-    client = _get_client()
-    result = (
-        client.table("case_judgments")
-        .select("*")
-        .eq("case_id", case_id)
-        .order("created_at", desc=True)
-        .limit(1)
-        .execute()
-    )
-    rows = result.data or []
-    return rows[0] if rows else None
 
 
 # ---------------------------------------------------------------------------

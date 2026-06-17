@@ -185,6 +185,12 @@ def process_gmail_message(message_id: str, *, labels: list[str] | None = None) -
     }
 
     applied_labels = labels_for_result(message_type, current_state)
+    if agent_result.get("status") in ("intake_error", "agent_error"):
+        # surface failures for a human; the email is still marked processed below
+        # so a poison message is never retried in a loop.
+        applied_labels = list(dict.fromkeys(
+            applied_labels + [f"{GMAIL_TASTING_ROOT_LABEL}/Needs Review"]
+        ))
     apply_message_labels(
         message_id,
         remove_labels=[GMAIL_TASTING_LABEL, f"{GMAIL_TASTING_ROOT_LABEL}/Inbox"],

@@ -13,6 +13,7 @@ it from the form body and store it on the reservation so case_type is reliable.
 from __future__ import annotations
 
 import logging
+import os
 
 log = logging.getLogger(__name__)
 
@@ -96,33 +97,73 @@ def intake_email(*, subject: str, sender: str, body: str, to_email: str = "",
             "message_type": message_type, "experience_type": reservation.experience_type}
 
 
+_AGENT_TIMEOUT = float(os.getenv("TR_AGENT_TIMEOUT", "120"))
+
+
+def _record_intake_failure(gmail_message_id: str, gmail_thread_id: str,
+                           subject: str, sender: str, err: str) -> None:
+    """Persist a failed-intake email as an unresolved event so the watcher does
+    not reprocess it forever and a human can see it."""
+    try:
+        from db import repository
+        from db.models import UnresolvedEvent
+        repository.insert_unresolved_event(UnresolvedEvent(
+            source_message_id=gmail_message_id, gmail_thread_id=gmail_thread_id,
+            subject=subject, from_email=sender, message_type="error",
+            reason=f"intake failed: {err}"[:500],
+            raw_payload={"subject": subject, "from": sender},
+        ))
+    except Exception:
+        pass
+
+
 def coordinate_email(*, subject: str, sender: str, body: str, to_email: str = "",
                      gmail_message_id: str = "", gmail_thread_id: str = "") -> dict:
     """Intake one email, then run the goal-oriented agent on the resolved case.
 
-    Returns a result shaped like the legacy graph result so the mailbox can label
-    and report uniformly.
+    HARDENED: never raises. Returns a status the mailbox can label/report on. A
+    failure is recorded and the email is still marked processed by the caller, so
+    one bad email can neither crash the watcher nor be retried forever.
+    Returns a result shaped like the legacy graph result.
     """
-    info = intake_email(subject=subject, sender=sender, body=body, to_email=to_email,
-                        gmail_message_id=gmail_message_id, gmail_thread_id=gmail_thread_id)
+    # --- intake (classify/resolve/persist) ---
+    try:
+        info = intake_email(subject=subject, sender=sender, body=body, to_email=to_email,
+                            gmail_message_id=gmail_message_id, gmail_thread_id=gmail_thread_id)
+    except Exception as e:
+        log.error("[tr:coordinate] intake failed for %s: %s", gmail_message_id, e, exc_info=True)
+        _record_intake_failure(gmail_message_id, gmail_thread_id, subject, sender, str(e))
+        return {"status": "intake_error", "reservation_id": None,
+                "message_type": "error", "error": str(e)}
+
     if info.get("unresolved") or not info.get("reservation_id"):
         return {"status": "unresolved", "message_type": info.get("message_type"),
                 "reservation_id": None}
 
-    import asyncio
-    from google.adk.runners import InMemoryRunner
-    from vertex_agent.agent import root_agent
-
     rid = info["reservation_id"]
 
-    async def _run():
-        runner = InMemoryRunner(agent=root_agent, app_name="tr-coordinate")
-        return await runner.run_debug(
-            f"Coordinate reservation {rid}. Decide and propose the single next step.",
-            quiet=True,
-        )
+    # --- agent coordination (bounded, isolated from intake) ---
+    try:
+        import asyncio
+        from google.adk.runners import InMemoryRunner
+        from vertex_agent.agent import root_agent
 
-    events = asyncio.run(_run())
+        async def _run():
+            runner = InMemoryRunner(agent=root_agent, app_name="tr-coordinate")
+            return await asyncio.wait_for(
+                runner.run_debug(
+                    f"Coordinate reservation {rid}. Decide and propose the single next step.",
+                    quiet=True,
+                ),
+                timeout=_AGENT_TIMEOUT,
+            )
+
+        events = asyncio.run(_run())
+    except Exception as e:
+        # Intake already persisted the case; surface it for staff rather than drop.
+        log.error("[tr:coordinate] agent failed for %s (%s): %s", gmail_message_id, rid, e, exc_info=True)
+        return {"status": "agent_error", "reservation_id": rid,
+                "message_type": info.get("message_type"), "error": str(e)}
 
     proposed, summary = None, ""
     for e in events:
@@ -141,5 +182,5 @@ def coordinate_email(*, subject: str, sender: str, body: str, to_email: str = ""
         "message_type": info.get("message_type"),
         "experience_type": info.get("experience_type"),
         "proposed_action": proposed,
-        "agent_summary": summary[:600],
+        "agent_summary": (summary or "")[:600],
     }
