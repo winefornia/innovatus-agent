@@ -536,7 +536,20 @@ async def _download_attachment(attachment: dict, sender_email: str = "") -> byte
             log.error("[gc:download] Chat media API download failed: %s", e)
             return None
 
-    # Fallback only for link-style attachments (source=DRIVE_FILE / external URL).
+    # Google Drive file (source=DRIVE_FILE) — fetch via the Drive API using the
+    # service account's domain-wide delegation (impersonating the workspace user,
+    # who owns the file). The browser downloadUri below can't be used: it needs a
+    # logged-in session and returns HTML to a programmatic caller.
+    drive_id = (attachment.get("driveDataRef") or {}).get("driveFileId")
+    if drive_id:
+        try:
+            from services.drive_service import download_drive_file
+            return await asyncio.to_thread(download_drive_file, drive_id)
+        except Exception as e:
+            log.error("[gc:download] Drive download failed: %s", e)
+            return None
+
+    # Fallback only for link-style attachments (external URL).
     uri = attachment.get("downloadUri")
     if not uri:
         return None
@@ -701,6 +714,23 @@ async def _handle_message(event: dict, space_id: str, thread_id: str, config: di
             else:
                 return _text("Could not download the PDF attachment. Try pasting the order text instead.")
             break
+
+    # A pasted Google Drive link (no file attachment) — download + digest it the
+    # same way, so "here's the order: drive.google.com/open?id=…" just works.
+    if not is_new_pdf and text:
+        from services.drive_service import download_drive_file, extract_drive_file_ids
+        for fid in extract_drive_file_ids(text):
+            pdf_bytes = await asyncio.to_thread(download_drive_file, fid)
+            if not pdf_bytes:
+                continue
+            try:
+                from services.pdf_service import extract_invoice_fields_from_pdf
+                text = await asyncio.to_thread(extract_invoice_fields_from_pdf, pdf_bytes)
+                is_new_pdf = True
+                log.info("[gc:pdf] digested Drive link %s (%d chars)", fid, len(text))
+                break
+            except Exception as e:
+                log.error("[gc:pdf] Drive-link extraction error: %s", e)
 
     if not text:
         return {"text": ""}
