@@ -333,14 +333,18 @@ def _decide_and_advance(action_id: str, decision: str, decided_by: str) -> dict:
     just an inbound email, drives the case to its next step. Runs sync (off-loop)."""
     from services.tastingroom_service import process_action_decision
     result = process_action_decision(action_id, decision, decided_by)
-    # Re-coordinate only after a STATUS-RESOLVING tap (yes/no/paid/…), which tells
-    # us a party's answer and lets the agent propose the next step. Do NOT
-    # re-coordinate after "approve" — that SENDS an outreach (e.g. the Josh email),
-    # after which we WAIT for the reply (the watcher resumes on the inbound). This
-    # is what prevents a re-send loop. reject/escalate are terminal.
+    # Re-coordinate only after a STATUS-RESOLVING tap (yes/no/paid/…) that did NOT
+    # already chain. The decision handlers hardcode the next card where they know it
+    # (paid → final confirmation, no → ask client). When they do (next_action_id
+    # set), we must NOT also re-coordinate — that would create a duplicate card. We
+    # ONLY let the agent fill the gap when the handler left the case hanging (e.g.
+    # internal-available while Josh is still unknown → agent proposes asking Josh).
+    # "approve" SENDS an outreach then waits for the reply (no re-coordinate →
+    # prevents a re-send loop); reject/escalate are terminal.
     if (result.get("ok")
             and decision not in ("approve", "reject", "escalate")
             and result.get("status") not in ("rejected", "escalated")
+            and not result.get("next_action_id")
             and result.get("reservation_id")):
         try:
             from vertex_agent.intake import coordinate_reservation
