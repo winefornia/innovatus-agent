@@ -117,16 +117,73 @@ def _record_intake_failure(gmail_message_id: str, gmail_thread_id: str,
         pass
 
 
+# Deterministic gap → action map. goal_model.gaps() decides the next step; we map
+# it to a SAFE_ACTION and post that approval card. NO LLM is in this decision — the
+# email TEXT is still LLM-drafted inside create_action_request, but WHAT to do next
+# (and every state change) is a pure function, gated by a human button tap.
+_GAP_TO_ACTION = {
+    "ask_client_alternatives":      "ask_client_alternatives",
+    "need_winefornia_availability": "ask_internal_availability",
+    "need_cecil_approval":          "ask_internal_availability",
+    "need_cecil_availability":      "ask_internal_availability",
+    "need_josh_availability":       "ask_josh_availability",
+    "offer_slot_to_client":         "offer_client_slot",
+    "offer_slot_to_customer":       "offer_client_slot",
+    "send_invoice":                 "send_tentative_invoice",
+    "await_or_check_payment":       "review_payment_status",
+    "send_final_confirmation":      "send_final_confirmation",
+}
+
+
+def coordinate_reservation(reservation_id: str) -> dict:
+    """DETERMINISTIC coordinator: derive the next gap from the goal model and post
+    the approval card for it. No LLM decides here. Skips when the goal is met, when
+    we're waiting on a reply already requested (no gap), or when a card of that type
+    is already pending (no duplicates). Never raises."""
+    try:
+        import dataclasses
+        from db.models import Reservation
+        from db.repository import get_reservation, list_availability_claims
+        from vertex_agent.goal_model import derive_goal_state
+
+        row = get_reservation(reservation_id)
+        if not row:
+            return {"status": "error", "reservation_id": reservation_id, "error": "no such reservation"}
+        if (row.get("current_state") or "") in ("FINAL_CONFIRMED", "CANCELLED_OR_DEFERRED"):
+            return {"status": "terminal", "reservation_id": reservation_id, "proposed_action": None}
+        gs = derive_goal_state(row, list_availability_claims(reservation_id))
+        if gs.is_goal_met():
+            return {"status": "goal_met", "reservation_id": reservation_id, "proposed_action": None}
+        gaps = gs.gaps()
+        action = _GAP_TO_ACTION.get(gaps[0]) if gaps else None
+        if not action:
+            return {"status": "waiting", "reservation_id": reservation_id, "proposed_action": None}
+
+        from services.tastingroom_chat_service import _latest_pending_action
+        existing = _latest_pending_action(reservation_id, preferred_type=action)
+        if existing and existing.get("action_type") == action and existing.get("status") == "pending":
+            return {"status": "already_pending", "reservation_id": reservation_id,
+                    "proposed_action": {"action": action}}
+
+        fields = {f.name for f in dataclasses.fields(Reservation)}
+        reservation = Reservation(**{k: v for k, v in row.items() if k in fields})
+        from services.tastingroom_service import create_action_request
+        action_id = create_action_request(reservation, action)
+        return {"status": "coordinated", "reservation_id": reservation_id,
+                "proposed_action": {"action": action, "action_id": action_id}}
+    except Exception as e:
+        log.error("[tr:coordinate] coordinate failed for %s: %s", reservation_id, e, exc_info=True)
+        return {"status": "error", "reservation_id": reservation_id, "error": str(e)}
+
+
 def coordinate_email(*, subject: str, sender: str, body: str, to_email: str = "",
                      gmail_message_id: str = "", gmail_thread_id: str = "") -> dict:
-    """Intake one email, then run the goal-oriented agent on the resolved case.
+    """Intake one email, then deterministically coordinate the resolved case.
 
-    HARDENED: never raises. Returns a status the mailbox can label/report on. A
-    failure is recorded and the email is still marked processed by the caller, so
-    one bad email can neither crash the watcher nor be retried forever.
-    Returns a result shaped like the legacy graph result.
+    HARDENED: never raises. A failure is recorded and the email is still marked
+    processed by the caller, so one bad email can neither crash the watcher nor be
+    retried forever.
     """
-    # --- intake (classify/resolve/persist) ---
     try:
         info = intake_email(subject=subject, sender=sender, body=body, to_email=to_email,
                             gmail_message_id=gmail_message_id, gmail_thread_id=gmail_thread_id)
@@ -141,60 +198,7 @@ def coordinate_email(*, subject: str, sender: str, body: str, to_email: str = ""
                 "reservation_id": None}
 
     rid = info["reservation_id"]
-    agent = _run_agent(rid)
-    if agent.get("status") == "agent_error":
-        log.error("[tr:coordinate] agent failed for %s (%s): %s",
-                  gmail_message_id, rid, agent.get("error"))
-        return {"status": "agent_error", "reservation_id": rid,
-                "message_type": info.get("message_type"), "error": agent.get("error")}
-    return {
-        "status": "coordinated",
-        "reservation_id": rid,
-        "message_type": info.get("message_type"),
-        "experience_type": info.get("experience_type"),
-        "proposed_action": agent.get("proposed_action"),
-        "agent_summary": agent.get("agent_summary", ""),
-    }
-
-
-def _run_agent(reservation_id: str) -> dict:
-    """Run the goal-oriented agent on a reservation; it reads the case and proposes
-    (and posts, via the approval card) the single next step. Never raises."""
-    try:
-        import asyncio
-        from google.adk.runners import InMemoryRunner
-        from vertex_agent.agent import root_agent
-
-        async def _run():
-            runner = InMemoryRunner(agent=root_agent, app_name="tr-coordinate")
-            return await asyncio.wait_for(
-                runner.run_debug(
-                    f"Coordinate reservation {reservation_id}. Decide and propose the single next step.",
-                    quiet=True,
-                ),
-                timeout=_AGENT_TIMEOUT,
-            )
-
-        events = asyncio.run(_run())
-    except Exception as e:
-        return {"status": "agent_error", "reservation_id": reservation_id, "error": str(e)}
-
-    proposed, summary = None, ""
-    for e in events:
-        c = getattr(e, "content", None)
-        if not c:
-            continue
-        for p in (c.parts or []):
-            fc = getattr(p, "function_call", None)
-            if fc and fc.name == "propose_action":
-                proposed = dict(fc.args)
-            elif getattr(p, "text", None):
-                summary = p.text
-    return {"status": "coordinated", "reservation_id": reservation_id,
-            "proposed_action": proposed, "agent_summary": (summary or "")[:600]}
-
-
-def coordinate_reservation(reservation_id: str) -> dict:
-    """Re-run the agent on an EXISTING reservation (e.g. after a card decision) to
-    propose + post the next step. No intake. Never raises."""
-    return _run_agent(reservation_id)
+    result = coordinate_reservation(rid)
+    result["message_type"] = info.get("message_type")
+    result["experience_type"] = info.get("experience_type")
+    return result
