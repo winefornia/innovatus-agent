@@ -18,7 +18,6 @@ from app.config import (
     JOSH_EMAIL,
     TASTINGROOM_SAFE_MODE,
     TASTINGROOM_TEST_RECIPIENT,
-    TELEGRAM_APPROVAL_CHAT_ID,
 )
 from db.models import (
     AvailabilityClaim,
@@ -90,33 +89,6 @@ SAFE_ACTIONS = {
     "escalate",
     "wait_for_josh",
 }
-
-TASTING_STATES = {
-    "REQUEST_RECEIVED",
-    "NEEDS_FACILITY_CHECK",
-    "WAITING_FOR_JOSH",
-    "FACILITY_AVAILABLE",
-    "NEEDS_INTERNAL_CHECK",
-    "INTERNAL_AVAILABLE",
-    "READY_TO_OFFER_CLIENT",
-    "SLOT_OFFERED_TO_CLIENT",
-    "CLIENT_ACCEPTED_SLOT",
-    "TENTATIVELY_BOOKED",
-    "INVOICE_SENT",
-    "PAYMENT_RECEIVED",
-    "FINAL_CONFIRMED",
-    "CLIENT_REQUESTED_ALTERNATIVE",
-    "JOSH_UNAVAILABLE",
-    "INTERNAL_UNAVAILABLE",
-    "NO_COMMON_SLOT",
-    "WAITING_FOR_CLIENT_REPLY",
-    "WAITING_FOR_PAYMENT",
-    "PAYMENT_OVERDUE",
-    "AMBIGUOUS_REPLY",
-    "HUMAN_REVIEW_REQUIRED",
-    "CANCELLED_OR_DEFERRED",
-}
-
 
 def _email_only(value: str) -> str:
     return parseaddr(value or "")[1].lower()
@@ -868,90 +840,6 @@ def _best_slot(facts: dict[str, Any], reservation: Reservation) -> dict:
     }
 
 
-def _apply_slot(reservation: Reservation, slot: dict) -> None:
-    if not slot:
-        return
-    date_value = slot.get("date")
-    time_value = slot.get("start_time")
-    if date_value:
-        reservation.requested_date = date_value
-    if time_value:
-        reservation.requested_time = time_value
-    reservation.active_slot = {
-        "date": reservation.requested_date,
-        "start_time": reservation.requested_time,
-        "time_description": slot.get("time_description"),
-    }
-
-
-def apply_state(reservation: Reservation, message_type: str, claims: list[AvailabilityClaim], facts: dict[str, Any]) -> Reservation:
-    if message_type == "squarespace_form":
-        reservation.current_state = "WAITING_FOR_JOSH"
-        reservation.recommended_action = "ask_internal_availability"
-    elif message_type == "josh_availability_reply":
-        if any(c.claim_status == "available" for c in claims):
-            if _has_available_claim(reservation.reservation_id, "internal_staff", "internal_availability"):
-                reservation.current_state = "READY_TO_OFFER_CLIENT"
-                reservation.recommended_action = "offer_client_slot"
-            else:
-                reservation.current_state = "NEEDS_INTERNAL_CHECK"
-                reservation.recommended_action = "ask_internal_availability"
-        elif any(c.claim_status == "unavailable" for c in claims):
-            reservation.current_state = "JOSH_UNAVAILABLE"
-            reservation.recommended_action = "ask_client_alternatives"
-        else:
-            reservation.current_state = "AMBIGUOUS_REPLY"
-            reservation.recommended_action = "escalate"
-    elif message_type == "josh_booking_confirmation":
-        reservation.booking_status = "facility_confirmed"
-        reservation.current_state = "TENTATIVELY_BOOKED"
-        reservation.recommended_action = "send_tentative_invoice"
-    elif message_type == "facility_booking_request":
-        _apply_slot(reservation, _best_slot(facts, reservation))
-        reservation.booking_status = "facility_booking_requested"
-        reservation.current_state = "TENTATIVELY_BOOKED"
-        reservation.recommended_action = "send_tentative_invoice"
-    elif message_type == "facility_availability_request":
-        reservation.current_state = "WAITING_FOR_JOSH"
-        reservation.recommended_action = None
-    elif message_type == "staff_slot_offer":
-        _apply_slot(reservation, _best_slot(facts, reservation))
-        reservation.current_state = "SLOT_OFFERED_TO_CLIENT"
-        reservation.recommended_action = None
-    elif message_type == "client_acceptance":
-        reservation.current_state = "CLIENT_ACCEPTED_SLOT"
-        reservation.recommended_action = "send_tentative_invoice"
-    elif message_type == "staff_unavailable_reply":
-        reservation.current_state = "WAITING_FOR_CLIENT_REPLY"
-        reservation.recommended_action = None
-    elif message_type == "client_alternative_request":
-        reservation.current_state = "CLIENT_REQUESTED_ALTERNATIVE"
-        reservation.candidate_slots = facts.get("candidate_slots") or reservation.candidate_slots
-        reservation.recommended_action = "ask_josh_availability"
-    elif message_type == "invoice_payment_message":
-        text = " ".join(str(value) for value in facts.values()).lower()
-        if facts.get("payment_status") == "paid" or "paid" in text:
-            reservation.current_state = "PAYMENT_RECEIVED"
-            reservation.payment_status = "paid"
-            reservation.recommended_action = "send_final_confirmation"
-        else:
-            reservation.current_state = "INVOICE_SENT"
-            reservation.payment_status = "sent"
-            reservation.recommended_action = "review_payment_status"
-    elif message_type == "final_confirmation_sent":
-        reservation.current_state = "FINAL_CONFIRMED"
-        reservation.booking_status = "confirmed"
-        reservation.payment_status = "paid"
-        reservation.recommended_action = None
-    elif message_type == "client_deferred":
-        reservation.current_state = "CANCELLED_OR_DEFERRED"
-        reservation.recommended_action = "close_case"
-    else:
-        reservation.current_state = "HUMAN_REVIEW_REQUIRED"
-        reservation.recommended_action = "escalate"
-    return reservation
-
-
 def draft_for_action(reservation: Reservation, action: str) -> dict[str, str]:
     client_name = _client_salutation(reservation.client_name)
     guests = _guest_phrase(reservation.guest_count)
@@ -1204,27 +1092,28 @@ def create_action_request(reservation: Reservation, action: str, source_message_
         email_subject=draft.get("subject"),
         email_body=draft.get("body"),
         recommendation=approval_message(reservation, action, draft),
-        telegram_chat_id=str(TELEGRAM_APPROVAL_CHAT_ID) if TELEGRAM_APPROVAL_CHAT_ID else None,
         source_message_id=source_message_id,
     )
-    from db.repository import insert_reservation_action, update_reservation_action
+    from db.repository import insert_reservation_action
 
     insert_reservation_action(request)
-    if TELEGRAM_APPROVAL_CHAT_ID:
-        try:
-            from services.telegram_service import send_inline_keyboard
+    rows = _rows_for_action(action, action_id)
 
-            resp = send_inline_keyboard(
-                TELEGRAM_APPROVAL_CHAT_ID,
-                request.recommendation or "",
-                _rows_for_action(action, action_id),
-                bot="tastingroom",
+    # Google Chat is the sole approval channel. Posts an interactive card to the
+    # configured space; if GOOGLE_CHAT_TR_SPACE is unset, the action is persisted
+    # (visible via /status and the activity page) but no card is pushed.
+    try:
+        from app.adapters.google_chat_tastingroom import is_enabled, post_action_card
+
+        if is_enabled():
+            post_action_card(action_id, request.recommendation or "", rows)
+        else:
+            logging.warning(
+                "[tastingroom] Google Chat approval channel not configured "
+                "(set GOOGLE_CHAT_TR_SPACE) — action %s saved but not pushed", action_id
             )
-            message_id = resp.get("result", {}).get("message_id")
-            if message_id:
-                update_reservation_action(action_id, telegram_message_id=str(message_id))
-        except Exception as exc:
-            logging.warning("[tastingroom] Telegram approval send failed: %s", exc)
+    except Exception as exc:
+        logging.warning("[tastingroom] Google Chat approval send failed: %s", exc)
     return action_id
 
 

@@ -52,6 +52,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from typing import TypedDict, Literal, Any
 
@@ -414,6 +415,67 @@ def _adjust_confidence(extracted: dict, llm_conf: float, ambiguities: list) -> f
     return max(0.1, min(1.0, round(conf, 2)))
 
 
+_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+
+# Item fields that mean "a price is already established" — checked before we ever
+# prompt for one, so the operator is never asked for a price they already gave.
+_PRICE_FIELDS = ("regular_unit_price_cents", "manual_price_cents", "unit_price")
+
+
+def _has_price(item: dict) -> bool:
+    return any(item.get(f) not in (None, "", 0) for f in _PRICE_FIELDS)
+
+
+def _clarification_price_cents(text: str, exclude: str | None = None) -> int | None:
+    """Extract a per-bottle price (cents) from a free-text clarification reply.
+
+    A `$`-prefixed amount always wins. Otherwise a bare number counts as a price
+    only when it can't be a vintage year — it has decimals, or sits outside the
+    1900–2099 range — so "2023" is read as a vintage, not $2,023.
+    """
+    t = text.replace(",", "")
+    m = re.search(r"\$\s*(\d+(?:\.\d{1,2})?)", t)
+    if m:
+        return int(round(float(m.group(1)) * 100))
+    for m in re.finditer(r"\b(\d+(?:\.\d{1,2})?)\b", t):
+        tok = m.group(1)
+        if exclude is not None and tok == exclude:
+            continue
+        if "." in tok or not (1900 <= float(tok) <= 2099):
+            return int(round(float(tok) * 100))
+    return None
+
+
+def _apply_clarification_facts(text: str, extracted: dict) -> None:
+    """Fold a plain-text clarification (a stated price and/or vintage) into the
+    extracted items, so the value the operator already gave is not asked again.
+
+    Price is stored as `regular_unit_price_cents` (per bottle, pre-discount — the
+    selected tier's discount applies) and only when exactly one item still lacks a
+    price, to avoid mis-assigning it across a multi-item order. Vintage fills in
+    any item missing one.
+    """
+    items = extracted.get("items") or []
+    if not items:
+        return
+
+    year_m = _YEAR_RE.search(text)
+    if year_m:
+        vintage = int(year_m.group(0))
+        for it in items:
+            if not it.get("vintage"):
+                it["vintage"] = vintage
+
+    price_cents = _clarification_price_cents(text, exclude=year_m.group(0) if year_m else None)
+    if price_cents is not None:
+        unpriced = [
+            it for it in items
+            if not _has_price(it)
+        ]
+        if len(unpriced) == 1:
+            unpriced[0]["regular_unit_price_cents"] = price_cents
+
+
 def ask_missing_fields(state: InvoiceState) -> InvoiceState:
     """Interrupt if required fields are missing OR confidence is too low.
 
@@ -451,10 +513,15 @@ def ask_missing_fields(state: InvoiceState) -> InvoiceState:
         updates = json.loads(response) if isinstance(response, str) else response
         if isinstance(updates, dict):
             existing.update(updates)
+        else:
+            raise ValueError("not a dict")
     except Exception:
-        # Plain text answer — fold back in as raw clarification
+        # Plain text answer — fold back in as raw clarification AND capture any
+        # price/vintage the operator stated, so we don't re-ask for the same
+        # value later (e.g. at confirm_item_prices).
         if response:
             existing["_clarification"] = str(response)
+            _apply_clarification_facts(str(response), existing)
 
     return {
         "extracted": existing,
@@ -737,13 +804,14 @@ def confirm_item_prices(state: InvoiceState) -> InvoiceState:
     label = target.get("label") or target.get("product_name") or "this item"
     tier = state.get("tier_name", "")
 
+    tier_note = f" the {tier}" if tier else " the selected"
     response = interrupt({
         "type": "price_confirmation",
         "item": label,
         "question": (
             f"I don't have a price on file for “{label}”, and none was stated in the order. "
-            f"What price per bottle should I charge? Reply with the amount (e.g. 45 or $45.00) — "
-            f"I'll use it as-is on the invoice."
+            f"What's the regular price per bottle? Reply with the amount (e.g. 45 or $45.00) — "
+            f"I'll apply{tier_note} pricing to it."
         ),
     })
 
@@ -756,7 +824,7 @@ def confirm_item_prices(state: InvoiceState) -> InvoiceState:
         # Primary: apply by index (robust — the order may omit the vintage, so
         # name/vintage matching against the catalog product is unreliable).
         if isinstance(idx, int) and 0 <= idx < len(items):
-            items[idx]["manual_price_cents"] = cents
+            items[idx]["regular_unit_price_cents"] = cents
             applied = True
         else:
             # Fallback (e.g. checkpoint written before item_index existed):
@@ -764,8 +832,8 @@ def confirm_item_prices(state: InvoiceState) -> InvoiceState:
             pn = (target.get("product_name") or "").lower()
             for it in items:
                 ipn = (it.get("product_name") or "").lower()
-                if pn and (pn in ipn or ipn in pn) and not it.get("manual_price_cents"):
-                    it["manual_price_cents"] = cents
+                if pn and (pn in ipn or ipn in pn) and not _has_price(it):
+                    it["regular_unit_price_cents"] = cents
                     applied = True
                     break
         logging.info("[invoice] price_confirmation: %s = %s cents (applied=%s)",

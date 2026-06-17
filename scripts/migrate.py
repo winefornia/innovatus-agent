@@ -87,6 +87,7 @@ def migrate_products(sb):
             "size": p.get("size", "750ml"),
             "bottles_per_case": p.get("bottles_per_case", 12),
             "msrp_bottle_cents": p.get("msrp_bottle_cents"),
+            "tier_prices": p.get("tier_prices", {}),
             "variable_pricing": p.get("variable_pricing", False),
             "tier_unavailable": p.get("tier_unavailable", []),
         })

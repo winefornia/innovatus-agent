@@ -10,22 +10,18 @@ One-time setup — register the webhook after deployment:
 import httpx
 from typing import Optional
 
-from app.config import TELEGRAM_BOT_TOKEN, TELEGRAM_TASTINGROOM_BOT_TOKEN
+from app.config import TELEGRAM_BOT_TOKEN
 
 _BASE = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 _FILE_BASE = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}"
-
-_TR_BASE = f"https://api.telegram.org/bot{TELEGRAM_TASTINGROOM_BOT_TOKEN}" if TELEGRAM_TASTINGROOM_BOT_TOKEN else ""
 
 # Telegram max message length is 4096 chars
 _MAX_LEN = 4000
 
 
-def send_message(chat_id: int | str, text: str, *, bot: str = "invoice") -> dict:
-    """Send a plain-text message to a Telegram chat."""
-    base = _TR_BASE if bot == "tastingroom" else _BASE
-    if bot == "tastingroom" and not base:
-        raise RuntimeError("TELEGRAM_TASTINGROOM_BOT_TOKEN is not set")
+def send_message(chat_id: int | str, text: str) -> dict:
+    """Send a plain-text message to a Telegram chat (invoice bot)."""
+    base = _BASE
     if len(text) > _MAX_LEN:
         text = text[:_MAX_LEN] + "…"
     resp = httpx.post(
@@ -41,13 +37,9 @@ def send_inline_keyboard(
     chat_id: int | str,
     text: str,
     rows: list[list[tuple[str, str]]],
-    *,
-    bot: str = "invoice",
 ) -> dict:
-    """Send a Telegram message with inline keyboard buttons."""
-    base = _TR_BASE if bot == "tastingroom" else _BASE
-    if bot == "tastingroom" and not base:
-        raise RuntimeError("TELEGRAM_TASTINGROOM_BOT_TOKEN is not set")
+    """Send a Telegram message with inline keyboard buttons (invoice bot)."""
+    base = _BASE
     if len(text) > _MAX_LEN:
         text = text[:_MAX_LEN] + "…"
     reply_markup = {

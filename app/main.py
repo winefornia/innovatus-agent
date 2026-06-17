@@ -25,7 +25,7 @@ from pydantic import BaseModel
 # The web process runs under uvicorn, which only configures its own loggers.
 # Without this, the root logger defaults to WARNING and every app-level INFO
 # log (Google Chat adapter, gateway, control layer) is silently dropped — the
-# bots (bot.py / tastingroom_bot.py) set this up themselves; the web didn't.
+# invoice bot (bot.py) sets this up itself; the web process didn't.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -280,9 +280,20 @@ def _peek_jwt_claims(token: str) -> dict:
         return {}
 
 
-def _verify_google_chat_token(auth_header: str) -> tuple[bool, str]:
+def _verify_google_chat_token(
+    auth_header: str,
+    audience: str | None = None,
+    signer_email: str | None = None,
+) -> tuple[bool, str]:
     """Return (ok, reason). Verifies the Google Chat Bearer JWT (sync — call via
-    a thread)."""
+    a thread).
+
+    audience/signer_email default to the invoice app's values; the tasting-room
+    Chat app (a separate GCP project, so a different aud URL and signer SA) passes
+    its own. A signer of "" disables the binding check (only aud is enforced).
+    """
+    audience = audience or _CHAT_AUDIENCE
+    signer_email = _CHAT_SIGNER_EMAIL if signer_email is None else signer_email
     if not auth_header or not auth_header.lower().startswith("bearer "):
         return False, "no bearer token"
     token = auth_header.split(" ", 1)[1].strip()
@@ -292,14 +303,15 @@ def _verify_google_chat_token(auth_header: str) -> tuple[bool, str]:
         # verify_oauth2_token validates the signature against Google's standard
         # certs, that iss is accounts.google.com, expiry, and aud == audience.
         claims = id_token.verify_oauth2_token(
-            token, g_requests.Request(), audience=_CHAT_AUDIENCE
+            token, g_requests.Request(), audience=audience
         )
     except Exception as e:
         c = _peek_jwt_claims(token)
         return False, (f"verify failed: {e} | unverified iss={c.get('iss')!r} "
                        f"aud={c.get('aud')!r} email={c.get('email')!r}")
     # Bind to OUR add-on: the token must be signed by our project's add-on SA.
-    if claims.get("email") != _CHAT_SIGNER_EMAIL or not claims.get("email_verified", False):
+    if signer_email and (claims.get("email") != signer_email
+                         or not claims.get("email_verified", False)):
         return False, f"unexpected signer: {claims.get('email')!r}"
     return True, "ok (addon JWT: aud + signer verified)"
 
@@ -331,6 +343,42 @@ async def google_chat_webhook(request: Request):
     except Exception:
         pass
     return await handle_google_chat_event(event)
+
+
+@app.post("/webhooks/google-chat/tastingroom")
+async def google_chat_tastingroom_webhook(request: Request):
+    """Approval channel for the tasting room — a SEPARATE Chat app/bot identity.
+
+    Verified against its own audience + signer (its GCP project differs from the
+    invoice app's), then dispatched to the tasting-room adapter where card clicks
+    resume process_action_decision().
+    """
+    from app.config import GOOGLE_CHAT_TR_AUDIENCE, GOOGLE_CHAT_TR_SIGNER_EMAIL
+    from app.adapters.google_chat_tastingroom import handle_tastingroom_event
+    _log = logging.getLogger("winefornia.main")
+    mode = (os.getenv("GCHAT_VERIFY", "observe") or "observe").lower()
+
+    if mode != "off":
+        ok, reason = await asyncio.to_thread(
+            _verify_google_chat_token,
+            request.headers.get("authorization", ""),
+            GOOGLE_CHAT_TR_AUDIENCE,
+            GOOGLE_CHAT_TR_SIGNER_EMAIL,
+        )
+        _log.info("[tr:gc:auth] %s — %s (mode=%s)", "ok" if ok else "FAILED", reason, mode)
+        if mode == "enforce" and not ok:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    event = await request.json()
+    return await handle_tastingroom_event(event)
+
+
+@app.get("/webhooks/google-chat")
+@app.get("/webhooks/google-chat/tastingroom")
+async def google_chat_webhook_healthcheck():
+    """200 for Google's Workspace Add-on endpoint reachability pings (GET), which
+    would otherwise log as 405 noise. Real Chat events always arrive via POST."""
+    return {"status": "ok"}
 
 
 @app.get("/activity", response_class=HTMLResponse)

@@ -63,14 +63,18 @@ def normalize_addon_event(event: dict) -> dict:
     return {"type": "", "user": user}
 
 
-def rewrite_card_buttons(cardsv2: list) -> None:
+def rewrite_card_buttons(cardsv2: list, endpoint_url: str | None = None) -> None:
     """In place: convert bare action.function names to the add-on full-URL form.
 
     {"onClick": {"action": {"function": "gc_confirm_yes"}}}
       becomes
     {"onClick": {"action": {"function": "<endpoint>",
                             "parameters": [{"key": "action", "value": "gc_confirm_yes"}]}}}
+
+    endpoint_url defaults to the invoice app's endpoint; the tasting-room Chat app
+    passes its own URL so its card clicks route to /webhooks/google-chat/tastingroom.
     """
+    target = endpoint_url or CHAT_ENDPOINT_URL
     for entry in cardsv2 or []:
         card = (entry or {}).get("card", {}) or {}
         for section in card.get("sections", []) or []:
@@ -80,7 +84,7 @@ def rewrite_card_buttons(cardsv2: list) -> None:
                     fn = action.get("function")
                     if fn and not fn.startswith("http"):
                         action["parameters"] = [{"key": "action", "value": fn}]
-                        action["function"] = CHAT_ENDPOINT_URL
+                        action["function"] = target
 
 
 def wrap_addon_response(resp: dict) -> dict:

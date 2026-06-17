@@ -33,7 +33,6 @@ from typing import Literal
 
 AgentName = Literal[
     "invoice_agent",
-    "tastingroom_agent",
 ]
 
 # ---------------------------------------------------------------------------
@@ -60,8 +59,6 @@ class RoutingDecision:
 _INTENT_TO_AGENT: dict[str, AgentName] = {
     "invoice_creation":  "invoice_agent",
     "invoice_status":    "invoice_agent",
-    "tastingroom_reservation": "tastingroom_agent",
-    "tastingroom_status": "tastingroom_agent",
     "general_chat":      "invoice_agent",
 }
 
@@ -69,11 +66,6 @@ _INVOICE_KEYWORDS = [
     "invoice", "bill", "charge", "order", "case", "bottle", "wine",
     "cab", "pinot", "chard", "zin", "rosé", "sauvignon",
     "net 30", "net 7", "net 14", "upon receipt", "cases of", "bottles of",
-]
-
-_TASTINGROOM_KEYWORDS = [
-    "tasting", "reservation", "booking", "josh", "haein", "mira",
-    "tour and tasting", "mark paid", "invoice sent", "final confirmation",
 ]
 
 
@@ -94,8 +86,6 @@ class SupervisorAgent:
         "INTENTS:\n"
         "- invoice_creation  : Create a new invoice for a wholesale/trade wine order\n"
         "- invoice_status    : Check or find an existing invoice\n"
-        "- tastingroom_reservation : Coordinate Innovatus tasting room reservation cases, client/Josh replies, holds, invoices, payment, final confirmation\n"
-        "- tastingroom_status : Check pending tasting room reservation actions or case state\n"
         "- general_chat      : Questions, greetings, anything else\n\n"
         "Return ONLY a JSON object — no markdown, no explanation:\n"
         "{{\n"
@@ -139,10 +129,6 @@ class SupervisorAgent:
 
     def _keyword_classify(self, text: str) -> str:
         t = text.lower()
-        if any(k in t for k in _TASTINGROOM_KEYWORDS):
-            if any(k in t for k in ("status", "pending", "show", "what", "state")):
-                return "tastingroom_status"
-            return "tastingroom_reservation"
         if any(k in t for k in _INVOICE_KEYWORDS):
             return "invoice_creation"
         return "general_chat"

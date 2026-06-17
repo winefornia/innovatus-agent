@@ -1,8 +1,12 @@
 # Core
-langgraph>=0.2.0
+langgraph>=0.2.0           # INVOICE pipeline only (tasting room is on Vertex ADK)
 langchain-core>=0.2.0
 langchain-anthropic>=0.2.0
 anthropic>=0.30.0
+
+# Tasting-room coordinator — Google Vertex ADK agent (Claude via LiteLLM)
+google-adk>=1.0.0
+litellm>=1.83.0            # avoid 1.82.7-1.82.8 (March 2026 security advisory)
 
 # API server
 fastapi>=0.111.0
