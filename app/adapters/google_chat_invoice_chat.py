@@ -159,13 +159,15 @@ def _digest_one_pdf(pdf_bytes: bytes, label: str) -> str:
         return ""
 
 
-def _digest_pdfs(msg: dict, text: str) -> str:
+def _digest_pdfs(msg: dict, text: str, user_email: str = "") -> str:
     """Digest every PDF referenced by the message into order text, else "".
 
     Covers all three shapes staff use:
       - an uploaded Chat file   → attachmentDataRef.resourceName (Chat media API)
       - a Google Drive file     → driveDataRef.driveFileId (Drive API, delegated)
       - a pasted Drive link     → drive.google.com/open?id=<ID> etc. in the text
+
+    `user_email` is the sender — Drive downloads impersonate them (the file owner).
     """
     from services.drive_service import download_drive_file, extract_drive_file_ids
 
@@ -187,7 +189,7 @@ def _digest_pdfs(msg: dict, text: str) -> str:
                 pdf_bytes = _download_attachment(ref)
             elif drive_id:                # Drive file attached in Chat
                 seen_drive.add(drive_id)
-                pdf_bytes = download_drive_file(drive_id)
+                pdf_bytes = download_drive_file(drive_id, user_email)
                 if not pdf_bytes:
                     log.info("[inv:gc] Drive attachment %s (%s) could not be downloaded", name, drive_id)
             if pdf_bytes:
@@ -200,7 +202,7 @@ def _digest_pdfs(msg: dict, text: str) -> str:
         if fid in seen_drive:
             continue
         seen_drive.add(fid)
-        pdf_bytes = download_drive_file(fid)
+        pdf_bytes = download_drive_file(fid, user_email)
         if pdf_bytes:
             got = _digest_one_pdf(pdf_bytes, f"Drive file {fid}")
             if got:
@@ -317,10 +319,12 @@ async def _route(ev: dict) -> dict:
 async def _handle_message(ev: dict, decided_by: str) -> dict:
     msg = ev.get("message", {}) or {}
     text = (msg.get("argumentText") or msg.get("text") or "").strip()
+    sender_email = ((ev.get("user") or {}).get("email") or "").strip()
 
     # Digest any attached / linked order PDF into the input state the agent reads
-    # (uploaded Chat file, Drive attachment, or a pasted Drive link).
-    pdf_text = await asyncio.to_thread(_digest_pdfs, msg, text)
+    # (uploaded Chat file, Drive attachment, or a pasted Drive link). Drive
+    # downloads impersonate the sender (the file owner).
+    pdf_text = await asyncio.to_thread(_digest_pdfs, msg, text, sender_email)
     if pdf_text:
         text = f"{text}\n\n{pdf_text}".strip() if text else pdf_text
 

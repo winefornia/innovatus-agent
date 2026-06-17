@@ -51,27 +51,43 @@ def extract_drive_file_ids(text: str) -> list[str]:
     return list(seen.keys())
 
 
-def _delegated_creds():
-    """Service account + domain-wide delegation creds scoped for Drive read, or None."""
+def _impersonation_subject(as_user: str = "") -> str | None:
+    """Who to impersonate via domain-wide delegation.
+
+    Prefer the file owner (the Chat sender's email) so we read files THEY own —
+    impersonating a fixed mailbox that doesn't have the file returns 404. Fall back
+    to GOOGLE_DELEGATED_USER_EMAIL when no sender email is available.
+    """
+    if as_user and "@" in as_user:
+        return as_user.strip()
+    fallback = os.environ.get("GOOGLE_DELEGATED_USER_EMAIL")
+    return fallback or None
+
+
+def _delegated_creds(as_user: str = ""):
+    """Service account + domain-wide delegation creds scoped for Drive read, or None.
+
+    Impersonates `as_user` (the file owner) when given, else GOOGLE_DELEGATED_USER_EMAIL.
+    """
     sa_b64 = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON_B64")
-    delegated_user = os.environ.get("GOOGLE_DELEGATED_USER_EMAIL")
-    if not sa_b64 or not delegated_user:
+    subject = _impersonation_subject(as_user)
+    if not sa_b64 or not subject:
         log.warning("[drive] no SA delegation configured "
-                    "(need GOOGLE_SERVICE_ACCOUNT_JSON_B64 + GOOGLE_DELEGATED_USER_EMAIL)")
+                    "(need GOOGLE_SERVICE_ACCOUNT_JSON_B64 + a subject to impersonate)")
         return None
     try:
         from google.oauth2 import service_account
         sa_info = json.loads(base64.b64decode(sa_b64).decode())
         return service_account.Credentials.from_service_account_info(
-            sa_info, scopes=_DRIVE_SCOPES, subject=delegated_user
+            sa_info, scopes=_DRIVE_SCOPES, subject=subject
         )
     except Exception as exc:  # pragma: no cover - defensive
         log.warning("[drive] could not build delegated creds: %s", exc)
         return None
 
 
-def _access_token() -> str | None:
-    creds = _delegated_creds()
+def _access_token(as_user: str = "") -> str | None:
+    creds = _delegated_creds(as_user)
     if not creds:
         return None
     try:
@@ -83,18 +99,21 @@ def _access_token() -> str | None:
         return None
 
 
-def download_drive_file(file_id: str) -> bytes | None:
+def download_drive_file(file_id: str, as_user: str = "") -> bytes | None:
     """Download a Drive file's bytes (binary, e.g. an uploaded PDF). None on failure.
 
-    Uses files.get?alt=media, which works for uploaded/binary files. Native Google
-    Docs/Sheets aren't binary and would 403 here — those aren't order PDFs, so we
-    just return None and let the caller ask for the text.
+    `as_user` is the file owner's email (the Chat sender) — we impersonate them so
+    we can read files they own. Uses files.get?alt=media, which works for
+    uploaded/binary files. Native Google Docs/Sheets aren't binary and would error
+    here — those aren't order PDFs, so we return None and let the caller ask for text.
     """
     if not file_id:
         return None
-    token = _access_token()
+    subject = _impersonation_subject(as_user)
+    token = _access_token(as_user)
     if not token:
         return None
+    log.info("[drive] downloading %s as %s", file_id, subject)
     url = (
         f"https://www.googleapis.com/drive/v3/files/{file_id}"
         "?alt=media&supportsAllDrives=true"
@@ -104,7 +123,11 @@ def download_drive_file(file_id: str) -> bytes | None:
             r = client.get(url, headers={"Authorization": f"Bearer {token}"})
         if r.status_code == 200:
             return r.content
-        if r.status_code == 403:
+        if r.status_code == 404:
+            log.warning("[drive] 404 downloading %s as %s — that user can't see the file "
+                        "(wrong impersonation target, or the file isn't shared with them)",
+                        file_id, subject)
+        elif r.status_code == 403:
             log.warning("[drive] 403 downloading %s — the SA's domain-wide delegation "
                         "likely lacks the drive.readonly scope (authorize it in the "
                         "Workspace admin console)", file_id)
