@@ -259,6 +259,16 @@ def classify_email(subject: str, sender: str, body: str) -> str:
     sender_email = _email_only(sender)
     latest = _latest_text(body)
     text = f"{subject}\n{latest}".lower()
+    subj_l = subject.lower()
+    sender_l = sender.lower()
+    # Squarespace form — keyed primarily on the (stable) notifier sender, because
+    # the body is HTML and may not carry the legacy "sent via form submission" /
+    # "date requested" text markers. This is the website-request entry point.
+    if "form-submission@squarespace.info" in sender_l or "squarespace" in sender_l:
+        if "form submission" in subj_l or any(
+            k in subj_l for k in ("tasting", "booking", "visit", "reservation")
+        ):
+            return "squarespace_form"
     if "sent via form submission" in text and "date requested" in text:
         return "squarespace_form"
     if "your reservation has been confirmed" in text and "party name:" in text:
