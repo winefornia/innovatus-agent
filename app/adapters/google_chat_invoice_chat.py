@@ -74,15 +74,18 @@ def _already_seen(message_name: str) -> bool:
 # ── Auth / posting ───────────────────────────────────────────────────────────
 
 def _service_account_info() -> dict | None:
-    """Decode the invoice-chat Chat app's service account key.
+    """Decode the Chat app's service account key for posting async results.
 
-    Falls back to the tasting-room key, then the shared invoice key, so a
-    single-project setup still works.
+    This adapter is the front door for the INVOICE Chat app (it serves
+    /webhooks/google-chat), so it must post as that app's identity — the same
+    GOOGLE_SERVICE_ACCOUNT_JSON_B64 the graph adapter uses. Order: an explicit
+    invoice-chat key if set, then the invoice app SA, then the tasting-room key as
+    a last resort. (Posting as the tasting-room bot fails — it isn't in this space.)
     """
     raw = (
         config.GOOGLE_CHAT_INVCHAT_SERVICE_ACCOUNT_JSON_B64
-        or config.GOOGLE_CHAT_TR_SERVICE_ACCOUNT_JSON_B64
         or os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "")
+        or config.GOOGLE_CHAT_TR_SERVICE_ACCOUNT_JSON_B64
     )
     if not raw:
         return None
