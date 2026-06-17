@@ -64,7 +64,7 @@ _STATUS_EMOJI = {
 # ---------------------------------------------------------------------------
 
 def _fmt_ts(ts_str: str | None) -> str:
-    """ISO timestamp (UTC from Supabase) → 'Jun 3, 2:14 pm' in Pacific."""
+    """ISO timestamp (UTC from Supabase) → '3 Jun, 7:14 am' in Pacific."""
     if not ts_str:
         return ""
     try:

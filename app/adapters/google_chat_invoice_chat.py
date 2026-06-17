@@ -214,9 +214,13 @@ def _digest_pdfs(msg: dict, text: str, user_email: str = "") -> str:
 # ── Inbound event handling ───────────────────────────────────────────────────
 
 def _is_authorized(email: str) -> bool:
+    """Fail-closed: an empty allowlist (missing/blank/malformed env var) denies
+    everyone rather than opening the invoicing assistant to the whole workspace."""
     allow = config.GOOGLE_CHAT_INVCHAT_AUTHORIZED_EMAILS
     if not allow:
-        return True
+        log.error("[invchat:gc] authorized-emails allowlist is empty — denying all "
+                  "(set GOOGLE_CHAT_INVCHAT_AUTHORIZED_EMAILS)")
+        return False
     return (email or "").strip().lower() in allow
 
 

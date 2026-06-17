@@ -24,12 +24,13 @@ def _reload_gmail(monkeypatch, **env):
     return gmail_service
 
 
-def test_auth_status_prefers_domain_wide_delegation(monkeypatch):
-    service_account_info = {
-        "client_email": "agent@example.iam.gserviceaccount.com",
-        "client_id": "123456789",
-    }
-    encoded = base64.b64encode(json.dumps(service_account_info).encode()).decode()
+def _encode_sa(**fields):
+    return base64.b64encode(json.dumps(fields).encode()).decode()
+
+
+def test_service_account_creds_built_with_delegated_subject(monkeypatch, mocker):
+    """SA JSON + delegated user → creds built with the delegated user as subject."""
+    encoded = _encode_sa(client_email="agent@example.iam.gserviceaccount.com")
 
     gmail_service = _reload_gmail(
         monkeypatch,
@@ -37,32 +38,33 @@ def test_auth_status_prefers_domain_wide_delegation(monkeypatch):
         GOOGLE_DELEGATED_USER_EMAIL="lisa@winefornia.com",
     )
 
-    status = gmail_service.get_auth_status()
+    sentinel = object()
+    from_info = mocker.patch.object(
+        gmail_service.service_account.Credentials,
+        "from_service_account_info",
+        return_value=sentinel,
+    )
 
-    assert status["mode"] == "domain_wide_delegation"
-    assert status["delegated_user"] == "lisa@winefornia.com"
-    assert status["service_account_email"] == "agent@example.iam.gserviceaccount.com"
-    assert status["service_account_client_id"] == "123456789"
+    creds = gmail_service._get_service_account_creds()
+
+    assert creds is sentinel
+    _, kwargs = from_info.call_args
+    assert kwargs["subject"] == "lisa@winefornia.com"
 
 
-def test_service_account_requires_delegated_user(monkeypatch):
-    service_account_info = {"client_email": "agent@example.iam.gserviceaccount.com"}
-    encoded = base64.b64encode(json.dumps(service_account_info).encode()).decode()
+def test_service_account_returns_none_without_delegated_user(monkeypatch):
+    """SA JSON present but no delegated user → None (DWD requires a subject)."""
+    encoded = _encode_sa(client_email="agent@example.iam.gserviceaccount.com")
 
     gmail_service = _reload_gmail(monkeypatch, GOOGLE_SERVICE_ACCOUNT_JSON_B64=encoded)
 
-    try:
-        gmail_service._service_account_credentials()
-    except RuntimeError as exc:
-        assert "delegated user" in str(exc)
-    else:
-        raise AssertionError("expected RuntimeError")
+    assert gmail_service._get_service_account_creds() is None
 
 
-def test_auth_status_falls_back_to_user_oauth(monkeypatch):
-    gmail_service = _reload_gmail(monkeypatch, GOOGLE_ACCOUNT_EMAIL="lisa@winefornia.com")
+def test_service_account_returns_none_without_sa_json(monkeypatch):
+    """No SA JSON → None, so _get_service falls back to OAuth token."""
+    gmail_service = _reload_gmail(
+        monkeypatch, GOOGLE_DELEGATED_USER_EMAIL="lisa@winefornia.com"
+    )
 
-    status = gmail_service.get_auth_status()
-
-    assert status["mode"] == "user_oauth"
-    assert status["delegated_user"] == "lisa@winefornia.com"
+    assert gmail_service._get_service_account_creds() is None

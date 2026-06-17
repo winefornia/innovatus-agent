@@ -78,8 +78,8 @@ GOOGLE_CHAT_TR_SIGNER_EMAIL = os.getenv(
 )
 GOOGLE_CHAT_TR_ENDPOINT_URL = os.getenv("GOOGLE_CHAT_TR_ENDPOINT_URL", _TR_DEFAULT_URL)
 # Only these Google accounts may approve/act on tasting-room cards or commands.
-# Empty list = open to any authenticated space member (back-compatible). Covers
-# Cecil + both of Lisa's addresses by default.
+# Fail-closed: an empty list (missing/blank/malformed env var) denies everyone.
+# Covers Cecil + both of Lisa's addresses by default.
 GOOGLE_CHAT_TR_AUTHORIZED_EMAILS = [
     e.strip().lower() for e in os.getenv(
         "GOOGLE_CHAT_TR_AUTHORIZED_EMAILS",
@@ -101,8 +101,8 @@ GOOGLE_CHAT_INVCHAT_SERVICE_ACCOUNT_JSON_B64 = os.getenv("GOOGLE_INVCHAT_SA_JSON
 GOOGLE_CHAT_INVCHAT_AUDIENCE = os.getenv("GOOGLE_CHAT_INVCHAT_AUDIENCE", _INVCHAT_DEFAULT_URL)
 GOOGLE_CHAT_INVCHAT_SIGNER_EMAIL = os.getenv("GOOGLE_CHAT_INVCHAT_SIGNER_EMAIL", "")
 GOOGLE_CHAT_INVCHAT_ENDPOINT_URL = os.getenv("GOOGLE_CHAT_INVCHAT_ENDPOINT_URL", _INVCHAT_DEFAULT_URL)
-# Only these Google accounts may use the invoicing assistant. Empty = open to any
-# authenticated space member (back-compatible).
+# Only these Google accounts may use the invoicing assistant. Fail-closed: an
+# empty list (missing/blank/malformed env var) denies everyone.
 GOOGLE_CHAT_INVCHAT_AUTHORIZED_EMAILS = [
     e.strip().lower() for e in os.getenv(
         "GOOGLE_CHAT_INVCHAT_AUTHORIZED_EMAILS",

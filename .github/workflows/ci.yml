@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref (e.g. rapid pushes to a PR).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"  # matches Dockerfile (python:3.13-slim)
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Test suite is hermetic: tests/conftest.py sets dummy env vars and mocks
+      # Square / Supabase / Anthropic, so no real secrets or network are needed.
+      - name: Run tests
+        run: pytest -q
+
+  deploy:
+    name: Deploy to Fly
+    needs: test  # hard gate — deploy only runs if the test job passes
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # Token is exposed as an env var (not interpolated into run scripts) so the
+    # gate step can detect whether deploy is configured without leaking it.
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - name: Check Fly token
+        id: gate
+        run: |
+          if [ -n "$FLY_API_TOKEN" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::FLY_API_TOKEN not configured — skipping deploy. Add it under repo Settings → Secrets and variables → Actions to enable auto-deploy on green tests."
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.ok == 'true'
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+        if: steps.gate.outputs.ok == 'true'
+
+      - name: Deploy
+        if: steps.gate.outputs.ok == 'true'
+        run: flyctl deploy --remote-only

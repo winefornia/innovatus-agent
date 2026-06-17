@@ -212,6 +212,13 @@ def test_authorized_emails_default_includes_cecil_and_lisa():
     assert "lisa@innovatuswine.com" in allow
 
 
+def test_empty_allowlist_fails_closed(monkeypatch):
+    # An empty/malformed allowlist must deny everyone, not open to the workspace.
+    monkeypatch.setattr(tr.config, "GOOGLE_CHAT_TR_AUTHORIZED_EMAILS", [])
+    assert tr._is_authorized_approver("cecil.park@winefornia.com") is False
+    assert tr._is_authorized_approver("") is False
+
+
 def test_unauthorized_approver_is_blocked(monkeypatch):
     called = []
     import services.tastingroom_service as svc

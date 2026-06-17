@@ -20,6 +20,7 @@ squareup>=37.0.0
 
 # Config
 python-dotenv>=1.0.0
+tzdata>=2024.1            # IANA tz data for zoneinfo (CI / slim images lack system tzdata)
 
 # Database
 supabase>=2.4.0
