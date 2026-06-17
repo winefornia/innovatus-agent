@@ -90,6 +90,36 @@ class TestActionRejection:
 
 
 # ---------------------------------------------------------------------------
+# Scenario 7b — approve records the outbound thread on the reservation so the
+# recipient's reply (e.g. Josh) attaches to THIS case, not a new nameless one.
+# ---------------------------------------------------------------------------
+
+class TestOutboundThreadRecorded:
+    def test_approve_records_sent_thread_on_reservation(self, mocker, monkeypatch):
+        import services.tastingroom_service as trs
+        monkeypatch.setattr(trs, "TASTINGROOM_SAFE_MODE", False, raising=False)
+
+        mocker.patch("db.repository.get_reservation_action", return_value=_pending_action())
+        mocker.patch("db.repository.update_reservation_action", return_value=None)
+        mocker.patch("db.repository.get_reservation", return_value=_fake_reservation())
+        mocker.patch("db.repository.insert_reservation_event", return_value=None)
+        mocker.patch("services.gmail_service.apply_message_labels", return_value=None)
+        mocker.patch("services.tastingroom_mailbox.labels_for_result", return_value=[])
+        mocker.patch.object(trs, "_apply_post_send_state", return_value=None)
+        mocker.patch("services.gmail_service.send_email",
+                     return_value={"message_id": "m1", "thread_id": "THREAD_JOSH", "to": "josh@example.com"})
+        upd = mocker.patch("db.repository.update_reservation", return_value=None)
+
+        result = process_action_decision("act_001", "approve", decided_by="tg_123")
+
+        assert result["ok"] is True
+        # the sent thread was appended to gmail_thread_ids
+        calls = [c for c in upd.call_args_list if "gmail_thread_ids" in c.kwargs]
+        assert calls, "update_reservation should be called with gmail_thread_ids"
+        assert "THREAD_JOSH" in calls[-1].kwargs["gmail_thread_ids"]
+
+
+# ---------------------------------------------------------------------------
 # Scenario 8 — duplicate approve: idempotent (second call returns error)
 # ---------------------------------------------------------------------------
 
