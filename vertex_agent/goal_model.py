@@ -108,12 +108,15 @@ class GoalState:
         if self.cecil_status == UNKNOWN:
             g.append("need_cecil_availability" if self.case_type == PRODUCTION_TOUR
                      else "need_cecil_approval")
-        # 2) CUSTOMER — offer a slot / get acceptance.
-        if self.cecil_status == OK and self.customer_commitment in (NONE,):
-            g.append("offer_slot_to_customer")
-        # 3) JOSH — facility availability / booking.
+        # Gather Josh's availability before offering the customer a slot — you
+        # can't offer a time that isn't confirmed available.
         if self.josh_availability == J_UNKNOWN:
             g.append("need_josh_availability")
+        # CUSTOMER — offer a slot only once it's actually available (Cecil ok AND
+        # Josh confirmed). Then chase acceptance.
+        if (self.cecil_status == OK and self.josh_availability == J_CONFIRMED
+                and self.customer_commitment in (NONE, DECLINED)):
+            g.append("offer_slot_to_customer")
 
         # Closeout (only once the visit is agreed).
         if (self.cecil_status == OK and self.customer_commitment == ACCEPTED

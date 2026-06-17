@@ -326,6 +326,26 @@ async def _route(ev: dict) -> dict:
     return _text_resp("Unknown event type.")
 
 
+def _decide_and_advance(action_id: str, decision: str, decided_by: str) -> dict:
+    """Apply the card decision, then re-run the agent to propose + post the NEXT
+    step (unless the case was rejected/escalated). This chains the flow forward —
+    e.g. tapping internal-available advances to asking Josh — so a button tap, not
+    just an inbound email, drives the case to its next step. Runs sync (off-loop)."""
+    from services.tastingroom_service import process_action_decision
+    result = process_action_decision(action_id, decision, decided_by)
+    if (result.get("ok")
+            and decision not in ("reject", "escalate")
+            and result.get("status") not in ("rejected", "escalated")
+            and result.get("reservation_id")):
+        try:
+            from vertex_agent.intake import coordinate_reservation
+            nxt = coordinate_reservation(result["reservation_id"]) or {}
+            result["next_action"] = (nxt.get("proposed_action") or {}).get("action")
+        except Exception as e:
+            log.warning("[tr:gc] re-coordinate after decision failed: %s", e)
+    return result
+
+
 async def _handle_click(ev: dict, decided_by: str) -> dict:
     action_name = (ev.get("action", {}) or {}).get("actionMethodName", "")
     if not action_name.startswith("tr:"):
@@ -335,12 +355,12 @@ async def _handle_click(ev: dict, decided_by: str) -> dict:
         return _text_resp("Malformed action.", update=True)
     _, action_id, decision = parts
 
-    from services.tastingroom_service import process_action_decision
-    result = await asyncio.to_thread(process_action_decision, action_id, decision, decided_by)
+    result = await asyncio.to_thread(_decide_and_advance, action_id, decision, decided_by)
 
     if result.get("ok"):
         status = result.get("status", "")
         rid = result.get("reservation_id", "")
+        nxt = result.get("next_action")
         if status == "rejected":
             msg = f"Got it — skipped. ({rid})"
         elif status == "escalated":
@@ -349,6 +369,8 @@ async def _handle_click(ev: dict, decided_by: str) -> dict:
             msg = f"Done! ({rid})"
         else:
             msg = f"Updated — {status}. ({rid})"
+        if nxt:
+            msg += f"\n\nNext step queued: {nxt} — a card for it is on its way."
         return _text_resp(msg, update=True)
 
     # An already-decided action means this was a retried/duplicate click — stay
