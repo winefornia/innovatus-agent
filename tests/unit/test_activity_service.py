@@ -14,10 +14,12 @@ from services.activity_service import (
 
 class TestFmtTs:
     def test_iso_datetime(self):
+        # Naive Supabase timestamps are treated as UTC and rendered in Pacific.
+        # 14:14 UTC on 2026-06-03 is 07:14 PDT (UTC-7).
         result = _fmt_ts("2026-06-03T14:14:00")
         assert "Jun" in result
         assert "3" in result
-        assert "2:14" in result
+        assert "7:14 am" in result
 
     def test_none_returns_empty(self):
         assert _fmt_ts(None) == ""
