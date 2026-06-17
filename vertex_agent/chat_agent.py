@@ -13,9 +13,6 @@ from __future__ import annotations
 
 import os
 
-from google.adk.agents import LlmAgent
-from google.adk.models.lite_llm import LiteLlm
-
 from vertex_agent.tools import get_case, list_open_cases
 
 
@@ -60,13 +57,23 @@ You are READ-ONLY. You do NOT send emails, reschedule, mark paid, or approve. If
 asked to DO something, explain that it happens via the approval cards (a human
 taps to act) and describe what the next card/step will be. Be brief and specific."""
 
-chat_agent = LlmAgent(
-    model=LiteLlm(model=os.getenv("TR_AGENT_MODEL", "anthropic/claude-sonnet-4-6")),
-    name="tasting_room_assistant",
-    description="Conversational, read-only assistant for tasting-room cases.",
-    instruction=_CHAT_INSTRUCTION,
-    tools=[find_cases, get_case, list_open_cases],
-)
+_chat_agent = None
+
+
+def _get_chat_agent():
+    """Build the ADK assistant lazily so this module imports without google-adk."""
+    global _chat_agent
+    if _chat_agent is None:
+        from google.adk.agents import LlmAgent
+        from google.adk.models.lite_llm import LiteLlm
+        _chat_agent = LlmAgent(
+            model=LiteLlm(model=os.getenv("TR_AGENT_MODEL", "anthropic/claude-sonnet-4-6")),
+            name="tasting_room_assistant",
+            description="Conversational, read-only assistant for tasting-room cases.",
+            instruction=_CHAT_INSTRUCTION,
+            tools=[find_cases, get_case, list_open_cases],
+        )
+    return _chat_agent
 
 
 def discuss(text: str, *, user: str = "") -> str:
@@ -77,7 +84,7 @@ def discuss(text: str, *, user: str = "") -> str:
 
         async def _run():
             return await asyncio.wait_for(
-                InMemoryRunner(agent=chat_agent, app_name="tr-chat").run_debug(text, quiet=True),
+                InMemoryRunner(agent=_get_chat_agent(), app_name="tr-chat").run_debug(text, quiet=True),
                 timeout=float(os.getenv("TR_AGENT_TIMEOUT", "120")),
             )
 
