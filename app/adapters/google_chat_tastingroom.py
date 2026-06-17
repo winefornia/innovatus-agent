@@ -392,6 +392,8 @@ async def _handle_message(ev: dict, decided_by: str) -> dict:
     text = (msg.get("argumentText") or msg.get("text") or "").strip()
     if not text:
         return {"text": ""}
-    from services.tastingroom_chat_service import handle_tastingroom_chat
-    reply = await asyncio.to_thread(handle_tastingroom_chat, text, chat_id=decided_by)
-    return _text_resp(reply or "Done.")
+    # Free-form chat → the read-only conversational assistant (answers with full
+    # case context). Actions still happen via the approval cards.
+    from vertex_agent.chat_agent import discuss
+    reply = await asyncio.to_thread(discuss, text, user=decided_by)
+    return _text_resp(reply or "I couldn't find anything on that.")
