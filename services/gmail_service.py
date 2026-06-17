@@ -9,6 +9,7 @@ Auth (two modes, checked in order):
 """
 import base64
 import json
+import logging
 import os
 import re
 from email.mime.multipart import MIMEMultipart
@@ -95,11 +96,24 @@ def _get_service():
     if _service:
         return _service
 
-    # Try service account first (production)
+    # Prefer service account + domain-wide delegation (no token expiry → most
+    # stable). VERIFY it actually works with a lightweight call; if the DWD grant
+    # isn't fully in place (admin console), fall back to the OAuth token instead
+    # of failing — so enabling GOOGLE_DELEGATED_USER_EMAIL can never break intake.
     creds = _get_service_account_creds()
     if creds:
-        _service = build("gmail", "v1", credentials=creds)
-        return _service
+        try:
+            svc = build("gmail", "v1", credentials=creds)
+            profile = svc.users().getProfile(userId="me").execute()
+            _service = svc
+            logging.info("[gmail] authed via domain-wide delegation as %s",
+                         profile.get("emailAddress"))
+            return _service
+        except Exception as e:
+            logging.warning(
+                "[gmail] domain-wide delegation failed (%s) — falling back to OAuth "
+                "token. Authorize the SA's client ID + scopes in the Workspace admin "
+                "console to use DWD.", e)
 
     # Fall back to OAuth user token (legacy / local dev)
     token_info = _load_token_info()
