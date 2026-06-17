@@ -610,3 +610,59 @@ def list_recent_workflow_records(limit: int = 20, bot_type: str = "") -> list[di
         query = query.eq("bot_type", bot_type)
     result = query.order("created_at", desc=True).limit(limit).execute()
     return result.data or []
+
+
+# ── system heartbeat (liveness) ──────────────────────────────────────────────
+# A tiny key→timestamp table the always-on watcher stamps each poll so a separate
+# process (the web app's monitor) can tell whether the watcher is still alive.
+
+def record_heartbeat(name: str, meta: Optional[dict] = None) -> None:
+    """Stamp `name`'s last-seen time as now (UTC). Upsert on the name PK."""
+    from datetime import datetime, timezone
+
+    client = _get_client()
+    client.table("system_heartbeat").upsert({
+        "name": name,
+        "last_beat_at": datetime.now(timezone.utc).isoformat(),
+        "meta": meta or {},
+    }).execute()
+
+
+def get_heartbeat(name: str) -> Optional[dict]:
+    """Return {name, last_beat_at, meta} for `name`, or None if never stamped."""
+    client = _get_client()
+    result = client.table("system_heartbeat").select("*").eq("name", name).limit(1).execute()
+    rows = result.data or []
+    return rows[0] if rows else None
+
+
+# ── chat pending-confirmation store (durable across restarts) ─────────────────
+# Backs vertex_agent.chat_actions so a staged-but-unconfirmed action (send email,
+# cancel, revoke) survives a web restart instead of living only in process memory.
+
+def upsert_chat_pending(chat_user: str, kind: str, params: dict, summary: str) -> None:
+    from datetime import datetime, timezone
+
+    client = _get_client()
+    client.table("chat_pending_actions").upsert({
+        "chat_user": chat_user,
+        "kind": kind,
+        "params": params or {},
+        "summary": summary or "",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }).execute()
+
+
+def get_chat_pending(chat_user: str) -> Optional[dict]:
+    client = _get_client()
+    result = (
+        client.table("chat_pending_actions").select("*")
+        .eq("chat_user", chat_user).limit(1).execute()
+    )
+    rows = result.data or []
+    return rows[0] if rows else None
+
+
+def delete_chat_pending(chat_user: str) -> None:
+    client = _get_client()
+    client.table("chat_pending_actions").delete().eq("chat_user", chat_user).execute()

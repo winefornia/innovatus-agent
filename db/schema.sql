@@ -383,6 +383,34 @@ create or replace trigger reservation_action_requests_updated_at
 
 
 -- ============================================================
+-- SYSTEM HEARTBEAT (liveness) + CHAT PENDING ACTIONS (durability)
+-- ============================================================
+-- system_heartbeat: the always-on tasting-room watcher stamps its name each poll
+-- so the web app's monitor can detect "watcher went silent" and alert.
+create table if not exists system_heartbeat (
+    name          text primary key,
+    last_beat_at  timestamptz not null,
+    meta          jsonb default '{}'::jsonb,
+    updated_at    timestamptz default now()
+);
+
+create or replace trigger system_heartbeat_updated_at
+    before update on system_heartbeat
+    for each row execute function update_updated_at();
+
+-- chat_pending_actions: durable store for confirm-first chat actions (send email,
+-- cancel, revoke) so a staged-but-unconfirmed action survives a web restart.
+-- One pending action per chat user (PK), 10-min TTL enforced in application code.
+create table if not exists chat_pending_actions (
+    chat_user   text primary key,
+    kind        text not null,            -- send_email | cancel_case | revoke
+    params      jsonb not null default '{}'::jsonb,
+    summary     text,
+    created_at  timestamptz not null default now()
+);
+
+
+-- ============================================================
 -- ROW LEVEL SECURITY
 -- ============================================================
 -- Every table in this schema is reached only through the backend using the
@@ -406,6 +434,8 @@ alter table reservations                enable row level security;
 alter table availability_claims         enable row level security;
 alter table reservation_events          enable row level security;
 alter table reservation_action_requests enable row level security;
+alter table system_heartbeat             enable row level security;
+alter table chat_pending_actions         enable row level security;
 
 -- Tables created outside this file (control/eval layer + LangGraph checkpointer
 -- orphans) also have RLS enabled directly on the project; see migration

@@ -87,6 +87,29 @@ GOOGLE_CHAT_TR_AUTHORIZED_EMAILS = [
     ).split(",") if e.strip()
 ]
 
+# ── Conversational invoicing over Google Chat ────────────────────────────────
+# The free-form invoicing chat assistant (vertex_agent.invoice_chat_agent), served
+# from a dedicated route /webhooks/google-chat/invoice-chat. It is a SIBLING to the
+# invoice-graph webhook (/webhooks/google-chat) — the graph keeps running; this is
+# the chat brain that understands intent and acts through confirm-first tools.
+# Config-gated: with no signer/audience set, token verification simply stays in
+# whatever GCHAT_VERIFY mode is active. The service account (for PDF download +
+# async result posting) falls back to the tasting-room / shared invoice key, so a
+# single-project setup works without provisioning a new bot.
+_INVCHAT_DEFAULT_URL = "https://winefornia-agent.fly.dev/webhooks/google-chat/invoice-chat"
+GOOGLE_CHAT_INVCHAT_SERVICE_ACCOUNT_JSON_B64 = os.getenv("GOOGLE_INVCHAT_SA_JSON_B64", "")
+GOOGLE_CHAT_INVCHAT_AUDIENCE = os.getenv("GOOGLE_CHAT_INVCHAT_AUDIENCE", _INVCHAT_DEFAULT_URL)
+GOOGLE_CHAT_INVCHAT_SIGNER_EMAIL = os.getenv("GOOGLE_CHAT_INVCHAT_SIGNER_EMAIL", "")
+GOOGLE_CHAT_INVCHAT_ENDPOINT_URL = os.getenv("GOOGLE_CHAT_INVCHAT_ENDPOINT_URL", _INVCHAT_DEFAULT_URL)
+# Only these Google accounts may use the invoicing assistant. Empty = open to any
+# authenticated space member (back-compatible).
+GOOGLE_CHAT_INVCHAT_AUTHORIZED_EMAILS = [
+    e.strip().lower() for e in os.getenv(
+        "GOOGLE_CHAT_INVCHAT_AUTHORIZED_EMAILS",
+        "cecil.park@winefornia.com,lisa@innovatuswine.com,lisa@winefornia.com",
+    ).split(",") if e.strip()
+]
+
 # Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")

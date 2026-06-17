@@ -193,6 +193,14 @@ def post_action_card(action_id: str, body_text: str,
     return name
 
 
+def post_text(text: str) -> str | None:
+    """Post a plain-text message to the configured space (with retry). Used for
+    out-of-band alerts (e.g. the watcher-liveness monitor). Returns msg name."""
+    if not is_enabled() or not text:
+        return None
+    return _send_with_retry(config.GOOGLE_CHAT_TR_SPACE, {"text": text[:4000]})
+
+
 def _to_message_body(resp: dict) -> dict:
     """Convert a handler response to a Chat REST Message body for async posting.
 

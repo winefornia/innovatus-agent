@@ -15,7 +15,12 @@ import vertex_agent.chat_actions as ca
 
 
 @pytest.fixture(autouse=True)
-def _clear_pending():
+def _clear_pending(monkeypatch):
+    # Keep the pending-store unit tests purely in-memory — stub the durable
+    # Supabase backing so they never reach the network.
+    monkeypatch.setattr(ca, "_db_get", lambda user: None)
+    monkeypatch.setattr(ca, "_db_put", lambda *a, **k: None)
+    monkeypatch.setattr(ca, "_db_del", lambda *a, **k: None)
     ca._PENDING.clear()
     ca.set_current_user("gchat_cecil@winefornia.com")
     yield

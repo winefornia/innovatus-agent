@@ -39,6 +39,9 @@ log = logging.getLogger(__name__)
 _CURRENT_USER: "contextvars.ContextVar[str]" = contextvars.ContextVar("tr_chat_user", default="")
 
 # user -> {"kind": str, "params": dict, "summary": str, "ts": float}
+# In-memory cache + fallback. The durable source of truth is the
+# chat_pending_actions Supabase table (so a staged action survives a web restart);
+# this dict mirrors it and is used when the DB is unavailable (e.g. unit tests).
 _PENDING: dict[str, dict[str, Any]] = {}
 _PENDING_TTL = 600  # seconds; a staged-but-unconfirmed action expires after 10 min
 
@@ -51,24 +54,71 @@ def _user() -> str:
     return _CURRENT_USER.get() or "gchat_unknown"
 
 
+# ── durable backing (best-effort; degrades to in-memory) ─────────────────────
+
+def _db_get(user: str) -> dict | None:
+    """Read a user's pending action from Supabase, shaped like a _PENDING entry.
+    Returns None on a miss OR any DB problem (caller falls back to memory)."""
+    try:
+        from db.repository import get_chat_pending
+
+        row = get_chat_pending(user)
+        if not row:
+            return None
+        from datetime import datetime, timezone
+
+        created = str(row.get("created_at") or "").replace("Z", "+00:00")
+        ts = datetime.fromisoformat(created).timestamp() if created else time.time()
+        return {"kind": row["kind"], "params": row.get("params") or {},
+                "summary": row.get("summary") or "", "ts": ts}
+    except Exception as exc:
+        log.debug("[tr:chat-actions] pending DB read unavailable: %s", exc)
+        return None
+
+
+def _db_put(user: str, kind: str, params: dict, summary: str) -> None:
+    try:
+        from db.repository import upsert_chat_pending
+
+        upsert_chat_pending(user, kind, params, summary)
+    except Exception as exc:
+        log.debug("[tr:chat-actions] pending DB write unavailable: %s", exc)
+
+
+def _db_del(user: str) -> None:
+    try:
+        from db.repository import delete_chat_pending
+
+        delete_chat_pending(user)
+    except Exception as exc:
+        log.debug("[tr:chat-actions] pending DB delete unavailable: %s", exc)
+
+
 # ── pending-confirmation store ───────────────────────────────────────────────
 
 def peek_pending(user: str) -> dict | None:
     """Return the live (non-expired) pending action for a user, or None.
 
-    Called by discuss() to decide whether to inject a confirmation note.
+    Reads the durable store first (survives restarts), falling back to the
+    in-memory mirror. Called by discuss() to decide whether to inject a
+    confirmation note.
     """
-    entry = _PENDING.get(user or "")
+    user = user or ""
+    entry = _db_get(user) or _PENDING.get(user)
     if not entry:
         return None
     if time.time() - entry["ts"] > _PENDING_TTL:
         _PENDING.pop(user, None)
+        _db_del(user)
         return None
+    _PENDING[user] = entry  # keep the in-memory mirror warm
     return entry
 
 
 def _stage(kind: str, params: dict, summary: str) -> str:
-    _PENDING[_user()] = {"kind": kind, "params": params, "summary": summary, "ts": time.time()}
+    user = _user()
+    _PENDING[user] = {"kind": kind, "params": params, "summary": summary, "ts": time.time()}
+    _db_put(user, kind, params, summary)
     return summary
 
 
@@ -83,6 +133,7 @@ def confirm_pending_action() -> str:
     if not entry:
         return "There's nothing waiting for confirmation right now."
     _PENDING.pop(_user(), None)
+    _db_del(_user())
     kind, params = entry["kind"], entry["params"]
     try:
         if kind == "send_email":
@@ -99,7 +150,9 @@ def confirm_pending_action() -> str:
 
 def cancel_pending_action() -> str:
     """Discard the staged action when the user declines (e.g. "no", "never mind")."""
-    had = _PENDING.pop(_user(), None)
+    had = peek_pending(_user())
+    _PENDING.pop(_user(), None)
+    _db_del(_user())
     return "Okay — left it as is." if had else "Nothing was staged, so nothing changed."
 
 
