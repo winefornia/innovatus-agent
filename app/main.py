@@ -373,6 +373,14 @@ async def google_chat_tastingroom_webhook(request: Request):
     return await handle_tastingroom_event(event)
 
 
+@app.get("/webhooks/google-chat")
+@app.get("/webhooks/google-chat/tastingroom")
+async def google_chat_webhook_healthcheck():
+    """200 for Google's Workspace Add-on endpoint reachability pings (GET), which
+    would otherwise log as 405 noise. Real Chat events always arrive via POST."""
+    return {"status": "ok"}
+
+
 @app.get("/activity", response_class=HTMLResponse)
 def activity_page(request: Request, limit: int = 20, key: str = ""):
     """Unified activity history — invoices + tasting room reservations.
