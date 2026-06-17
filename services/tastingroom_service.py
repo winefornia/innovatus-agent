@@ -1240,6 +1240,21 @@ def process_action_decision(action_id: str, decision: str, decided_by: str = "te
             except Exception as exc:
                 logging.warning("[tastingroom] sent-email labeling failed: %s", exc)
         update_reservation_action(action_id, status="sent")
+        # Record the outbound thread on the reservation so the recipient's reply
+        # (e.g. Josh's availability answer, which arrives on a NEW thread separate
+        # from the client's) attaches to THIS case instead of spawning a new
+        # nameless one. This is how the client name carries through Josh's reply.
+        sent_thread = send_result.get("thread_id")
+        if sent_thread and not send_result.get("dry_run"):
+            try:
+                from db.repository import get_reservation as _get_res, update_reservation as _upd_res
+                _row = (reservation if isinstance(reservation, dict) else None) or _get_res(reservation_id) or {}
+                _threads = list(_row.get("gmail_thread_ids") or [])
+                if sent_thread not in _threads:
+                    _threads.append(sent_thread)
+                    _upd_res(reservation_id, gmail_thread_ids=_threads)
+            except Exception as exc:
+                logging.warning("[tastingroom] could not record outbound thread %s: %s", sent_thread, exc)
         _apply_post_send_state(action, reservation, safe_actual_recipient=actual_recipient, send_result=send_result)
         # END STATE: on final confirmation, invite all 3 parties to the visit.
         if action_type == "send_final_confirmation":
