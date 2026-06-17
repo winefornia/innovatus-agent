@@ -141,8 +141,25 @@ def coordinate_email(*, subject: str, sender: str, body: str, to_email: str = ""
                 "reservation_id": None}
 
     rid = info["reservation_id"]
+    agent = _run_agent(rid)
+    if agent.get("status") == "agent_error":
+        log.error("[tr:coordinate] agent failed for %s (%s): %s",
+                  gmail_message_id, rid, agent.get("error"))
+        return {"status": "agent_error", "reservation_id": rid,
+                "message_type": info.get("message_type"), "error": agent.get("error")}
+    return {
+        "status": "coordinated",
+        "reservation_id": rid,
+        "message_type": info.get("message_type"),
+        "experience_type": info.get("experience_type"),
+        "proposed_action": agent.get("proposed_action"),
+        "agent_summary": agent.get("agent_summary", ""),
+    }
 
-    # --- agent coordination (bounded, isolated from intake) ---
+
+def _run_agent(reservation_id: str) -> dict:
+    """Run the goal-oriented agent on a reservation; it reads the case and proposes
+    (and posts, via the approval card) the single next step. Never raises."""
     try:
         import asyncio
         from google.adk.runners import InMemoryRunner
@@ -152,7 +169,7 @@ def coordinate_email(*, subject: str, sender: str, body: str, to_email: str = ""
             runner = InMemoryRunner(agent=root_agent, app_name="tr-coordinate")
             return await asyncio.wait_for(
                 runner.run_debug(
-                    f"Coordinate reservation {rid}. Decide and propose the single next step.",
+                    f"Coordinate reservation {reservation_id}. Decide and propose the single next step.",
                     quiet=True,
                 ),
                 timeout=_AGENT_TIMEOUT,
@@ -160,10 +177,7 @@ def coordinate_email(*, subject: str, sender: str, body: str, to_email: str = ""
 
         events = asyncio.run(_run())
     except Exception as e:
-        # Intake already persisted the case; surface it for staff rather than drop.
-        log.error("[tr:coordinate] agent failed for %s (%s): %s", gmail_message_id, rid, e, exc_info=True)
-        return {"status": "agent_error", "reservation_id": rid,
-                "message_type": info.get("message_type"), "error": str(e)}
+        return {"status": "agent_error", "reservation_id": reservation_id, "error": str(e)}
 
     proposed, summary = None, ""
     for e in events:
@@ -176,11 +190,11 @@ def coordinate_email(*, subject: str, sender: str, body: str, to_email: str = ""
                 proposed = dict(fc.args)
             elif getattr(p, "text", None):
                 summary = p.text
-    return {
-        "status": "coordinated",
-        "reservation_id": rid,
-        "message_type": info.get("message_type"),
-        "experience_type": info.get("experience_type"),
-        "proposed_action": proposed,
-        "agent_summary": (summary or "")[:600],
-    }
+    return {"status": "coordinated", "reservation_id": reservation_id,
+            "proposed_action": proposed, "agent_summary": (summary or "")[:600]}
+
+
+def coordinate_reservation(reservation_id: str) -> dict:
+    """Re-run the agent on an EXISTING reservation (e.g. after a card decision) to
+    propose + post the next step. No intake. Never raises."""
+    return _run_agent(reservation_id)

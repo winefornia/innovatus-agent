@@ -86,6 +86,56 @@ def list_open_cases() -> list[dict]:
 _MIN_CONFIDENCE = 0.6
 
 
+_GAP_STAGE = {
+    "ask_client_alternatives":      "Going back to the client for a new time",
+    "need_winefornia_availability": "Checking Winefornia (our) availability",
+    "need_cecil_approval":          "Awaiting Winefornia approval",
+    "need_cecil_availability":      "Checking Winefornia availability",
+    "need_josh_availability":       "Checking Josh (facility) availability",
+    "offer_slot_to_client":         "Ready to offer the client the slot",
+    "offer_slot_to_customer":       "Ready to offer the client the slot",
+    "send_invoice":                 "Ready to send the invoice",
+    "await_or_check_payment":       "Waiting on payment",
+    "send_final_confirmation":      "Ready to confirm + send calendar invites",
+}
+
+
+def open_cases_status() -> list[dict]:
+    """Status of every OPEN case (not yet confirmed, not cancelled): the client name
+    and case id, who's confirmed so far, and what each one is waiting on right now.
+    Use this for 'status' / 'what's open' / overview questions. Smoke-test cases are
+    excluded.
+    """
+    out: list[dict] = []
+    for r in list_recent_reservations(limit=40):
+        rid = r["reservation_id"]
+        if rid.startswith("TASTING-SMOKE-"):
+            continue
+        if (r.get("current_state") or "") in ("FINAL_CONFIRMED", "CANCELLED_OR_DEFERRED"):
+            continue
+        gs = derive_goal_state(r, list_availability_claims(rid))
+        if gs.is_goal_met():
+            continue
+        gaps = gs.gaps()
+        confirmed = []
+        if gs.cecil_status == "ok":
+            confirmed.append("Winefornia")
+        if gs.josh_availability == "confirmed":
+            confirmed.append("Josh")
+        if gs.customer_commitment == "accepted":
+            confirmed.append("Customer")
+        out.append({
+            "case": rid,
+            "client_name": r.get("client_name") or "(no name yet)",
+            "case_type": gs.case_type,
+            "date": r.get("requested_date"),
+            "confirmed": confirmed,
+            "waiting_on": (_GAP_STAGE.get(gaps[0], gaps[0]) if gaps
+                          else "A reply we already requested"),
+        })
+    return out
+
+
 def propose_action(reservation_id: str, action: str, rationale: str, confidence: float = 1.0) -> dict:
     """Propose the next coordination action. This DOES NOT send anything — it
     creates an approval request and posts the Google Chat card for a human to

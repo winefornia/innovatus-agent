@@ -8,6 +8,7 @@ Auth (two modes, checked in order):
      Run scripts/google_auth.py once to get the token.
 """
 import base64
+import html
 import json
 import logging
 import os
@@ -172,19 +173,43 @@ def delete_label(label_name: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def _decode_body(payload: dict) -> str:
-    if payload.get("mimeType") == "text/plain" and payload.get("body", {}).get("data"):
-        return base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="replace")
-    for part in payload.get("parts", []):
-        if part.get("mimeType") == "text/plain" and part.get("body", {}).get("data"):
-            return base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="replace")
-        if part.get("parts"):
-            result = _decode_body(part)
-            if result:
-                return result
-    for part in payload.get("parts", []):
-        if part.get("mimeType") == "text/html" and part.get("body", {}).get("data"):
-            html = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="replace")
-            return re.sub(r"<[^>]+>", " ", html).strip()
+    """Extract readable text from a Gmail payload.
+
+    Prefers a NON-EMPTY text/plain part; falls back to text/html (tags stripped,
+    entities unescaped) so HTML-only senders — e.g. Squarespace form
+    notifications — are not read as an empty body. The old version returned the
+    first text/plain part even when it decoded to empty, which dead-ended form
+    intake (empty body → 'unclassified' → no reservation, no card)."""
+    plain: list[str] = []
+    htmls: list[str] = []
+
+    def _walk(p: dict) -> None:
+        data = (p.get("body") or {}).get("data")
+        mt = p.get("mimeType", "")
+        if data:
+            try:
+                decoded = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+            except Exception:
+                decoded = ""
+            if mt == "text/plain":
+                plain.append(decoded)
+            elif mt == "text/html":
+                htmls.append(decoded)
+        for sub in p.get("parts", []) or []:
+            _walk(sub)
+
+    _walk(payload)
+    for t in plain:
+        if t and t.strip():
+            return t
+    for h in htmls:
+        if h and h.strip():
+            text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", h, flags=re.I | re.S)
+            text = re.sub(r"<[^>]+>", " ", text)
+            text = html.unescape(text)
+            text = re.sub(r"[ \t\r\f]+", " ", text)
+            text = re.sub(r"\n\s*\n+", "\n", text)
+            return text.strip()
     return ""
 
 

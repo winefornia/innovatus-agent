@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import uuid
 from datetime import date, datetime, timedelta
@@ -259,6 +260,16 @@ def classify_email(subject: str, sender: str, body: str) -> str:
     sender_email = _email_only(sender)
     latest = _latest_text(body)
     text = f"{subject}\n{latest}".lower()
+    subj_l = subject.lower()
+    sender_l = sender.lower()
+    # Squarespace form — keyed primarily on the (stable) notifier sender, because
+    # the body is HTML and may not carry the legacy "sent via form submission" /
+    # "date requested" text markers. This is the website-request entry point.
+    if "form-submission@squarespace.info" in sender_l or "squarespace" in sender_l:
+        if "form submission" in subj_l or any(
+            k in subj_l for k in ("tasting", "booking", "visit", "reservation")
+        ):
+            return "squarespace_form"
     if "sent via form submission" in text and "date requested" in text:
         return "squarespace_form"
     if "your reservation has been confirmed" in text and "party name:" in text:
@@ -1002,6 +1013,9 @@ def _header(reservation: Reservation) -> str:
         lines[0] += f", {guests}"
     if reservation.experience_type:
         lines.append(reservation.experience_type)
+    # Always stamp the case id so concurrent cases are unambiguous in the space.
+    if reservation.reservation_id:
+        lines.append(f"Case: {reservation.reservation_id}")
     return "\n".join(lines)
 
 
@@ -1202,6 +1216,9 @@ def process_action_decision(action_id: str, decision: str, decided_by: str = "te
                 logging.warning("[tastingroom] sent-email labeling failed: %s", exc)
         update_reservation_action(action_id, status="sent")
         _apply_post_send_state(action, reservation, safe_actual_recipient=actual_recipient, send_result=send_result)
+        # END STATE: on final confirmation, invite all 3 parties to the visit.
+        if action_type == "send_final_confirmation":
+            _send_calendar_invites(reservation_id, reservation or get_reservation(reservation_id))
         insert_reservation_event(ReservationEvent(
             reservation_id=reservation_id,
             event_type="approved_email_sent",
@@ -1296,6 +1313,33 @@ def _apply_post_send_state(
             recommended_action=None,
             **extra,
         )
+
+
+def _send_calendar_invites(reservation_id: str, reservation: Optional[dict]) -> None:
+    """End state: invite Winefornia (Lisa), the customer, and Josh to the confirmed
+    visit — all three, even for a standard tasting. In safe mode only the test
+    address is invited. Best-effort; never blocks the confirmation."""
+    try:
+        from services.calendar_service import create_tasting_event
+        r = reservation or {}
+        name = r.get("client_name") or "guest"
+        exp = r.get("experience_type") or "Tasting"
+        if TASTINGROOM_SAFE_MODE:
+            attendees = [TASTINGROOM_TEST_RECIPIENT]
+        else:
+            lisa = os.getenv("GOOGLE_DELEGATED_USER_EMAIL") or os.getenv("GOOGLE_ACCOUNT_EMAIL") or ""
+            attendees = [lisa, r.get("client_email") or "", JOSH_EMAIL]
+        create_tasting_event(
+            reservation_id=reservation_id,
+            summary=f"Winefornia Tasting — {name} ({exp})",
+            date_str=r.get("requested_date"),
+            time_str=r.get("requested_time"),
+            attendees=attendees,
+            description=f"Tasting-room visit for {name}. Case {reservation_id}.",
+            location="The Caves at Soda Canyon",
+        )
+    except Exception as exc:
+        logging.warning("[tastingroom] calendar invite failed for %s: %s", reservation_id, exc)
 
 
 def _process_internal_availability_decision(

@@ -99,21 +99,27 @@ class GoalState:
         sense (e.g. don't offer the customer a slot before availability is known).
         """
         g: list[str] = []
-        # Hard blocks first — a declined/unavailable party needs human attention.
+        # CLIENT-FIRST (priority 1): if the requested time doesn't work for anyone —
+        # Winefornia can't, Josh is unavailable, or the client declined — go back to
+        # the CLIENT for a new time. Don't escalate, don't stall.
         if self.cecil_status == BLOCKED or self.josh_availability == J_UNAVAILABLE \
                 or self.customer_commitment == DECLINED:
-            g.append("blocked_needs_alternatives_or_escalation")
+            return ["ask_client_alternatives"]
 
-        # 1) CECIL — approval (STANDARD) or availability (PRODUCTION_TOUR).
+        # Validate the client's requested time — Winefornia (priority 2), then Josh
+        # (priority 3). (Skipped automatically once answered.)
         if self.cecil_status == UNKNOWN:
             g.append("need_cecil_availability" if self.case_type == PRODUCTION_TOUR
                      else "need_cecil_approval")
-        # 2) CUSTOMER — offer a slot / get acceptance.
-        if self.cecil_status == OK and self.customer_commitment in (NONE,):
-            g.append("offer_slot_to_customer")
-        # 3) JOSH — facility availability / booking.
+        # Gather Josh's availability before offering the customer a slot — you
+        # can't offer a time that isn't confirmed available.
         if self.josh_availability == J_UNKNOWN:
             g.append("need_josh_availability")
+        # CUSTOMER — offer a slot only once it's actually available (Cecil ok AND
+        # Josh confirmed). Then chase acceptance.
+        if (self.cecil_status == OK and self.josh_availability == J_CONFIRMED
+                and self.customer_commitment in (NONE, DECLINED)):
+            g.append("offer_slot_to_customer")
 
         # Closeout (only once the visit is agreed).
         if (self.cecil_status == OK and self.customer_commitment == ACCEPTED

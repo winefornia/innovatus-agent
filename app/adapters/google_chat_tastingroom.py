@@ -326,6 +326,31 @@ async def _route(ev: dict) -> dict:
     return _text_resp("Unknown event type.")
 
 
+def _decide_and_advance(action_id: str, decision: str, decided_by: str) -> dict:
+    """Apply the card decision, then re-run the agent to propose + post the NEXT
+    step (unless the case was rejected/escalated). This chains the flow forward —
+    e.g. tapping internal-available advances to asking Josh — so a button tap, not
+    just an inbound email, drives the case to its next step. Runs sync (off-loop)."""
+    from services.tastingroom_service import process_action_decision
+    result = process_action_decision(action_id, decision, decided_by)
+    # Re-coordinate only after a STATUS-RESOLVING tap (yes/no/paid/…), which tells
+    # us a party's answer and lets the agent propose the next step. Do NOT
+    # re-coordinate after "approve" — that SENDS an outreach (e.g. the Josh email),
+    # after which we WAIT for the reply (the watcher resumes on the inbound). This
+    # is what prevents a re-send loop. reject/escalate are terminal.
+    if (result.get("ok")
+            and decision not in ("approve", "reject", "escalate")
+            and result.get("status") not in ("rejected", "escalated")
+            and result.get("reservation_id")):
+        try:
+            from vertex_agent.intake import coordinate_reservation
+            nxt = coordinate_reservation(result["reservation_id"]) or {}
+            result["next_action"] = (nxt.get("proposed_action") or {}).get("action")
+        except Exception as e:
+            log.warning("[tr:gc] re-coordinate after decision failed: %s", e)
+    return result
+
+
 async def _handle_click(ev: dict, decided_by: str) -> dict:
     action_name = (ev.get("action", {}) or {}).get("actionMethodName", "")
     if not action_name.startswith("tr:"):
@@ -335,12 +360,12 @@ async def _handle_click(ev: dict, decided_by: str) -> dict:
         return _text_resp("Malformed action.", update=True)
     _, action_id, decision = parts
 
-    from services.tastingroom_service import process_action_decision
-    result = await asyncio.to_thread(process_action_decision, action_id, decision, decided_by)
+    result = await asyncio.to_thread(_decide_and_advance, action_id, decision, decided_by)
 
     if result.get("ok"):
         status = result.get("status", "")
         rid = result.get("reservation_id", "")
+        nxt = result.get("next_action")
         if status == "rejected":
             msg = f"Got it — skipped. ({rid})"
         elif status == "escalated":
@@ -349,6 +374,8 @@ async def _handle_click(ev: dict, decided_by: str) -> dict:
             msg = f"Done! ({rid})"
         else:
             msg = f"Updated — {status}. ({rid})"
+        if nxt:
+            msg += f"\n\nNext step queued: {nxt} — a card for it is on its way."
         return _text_resp(msg, update=True)
 
     # An already-decided action means this was a retried/duplicate click — stay
@@ -365,6 +392,8 @@ async def _handle_message(ev: dict, decided_by: str) -> dict:
     text = (msg.get("argumentText") or msg.get("text") or "").strip()
     if not text:
         return {"text": ""}
-    from services.tastingroom_chat_service import handle_tastingroom_chat
-    reply = await asyncio.to_thread(handle_tastingroom_chat, text, chat_id=decided_by)
-    return _text_resp(reply or "Done.")
+    # Free-form chat → the read-only conversational assistant (answers with full
+    # case context). Actions still happen via the approval cards.
+    from vertex_agent.chat_agent import discuss
+    reply = await asyncio.to_thread(discuss, text, user=decided_by)
+    return _text_resp(reply or "I couldn't find anything on that.")
