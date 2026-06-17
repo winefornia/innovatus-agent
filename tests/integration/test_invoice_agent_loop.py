@@ -63,6 +63,25 @@ def test_read_query_answers_without_staging():
     assert "$" in reply, f"expected a price in the answer, got: {reply!r}"
 
 
+def test_attached_doc_question_answers_not_invoices():
+    """A question + an attached reference doc must be ANSWERED from the doc, not
+    force-started as an invoice (the universal extract-then-route behavior)."""
+    import vertex_agent.invoice_chat_actions as ica
+    from vertex_agent.invoice_chat_agent import discuss
+
+    doc = (
+        "[Attached document: WINE INVENTORY & PRICING.pdf]\n"
+        "Variety | Volume | Retail | Wholesale | FOB\n"
+        "Viognier | 750ml | $75 | $53 | $41\n"
+    )
+    reply = discuss(
+        "are you able to find retail price for Viognier 2023?\n\n" + doc, user=_USER
+    )
+
+    assert ica.peek_pending(_USER) is None, "a question must not start an invoice"
+    assert "75" in reply, f"should answer the retail price from the sheet, got: {reply!r}"
+
+
 def test_price_edit_stages_and_confirm_gates():
     import vertex_agent.invoice_chat_actions as ica
     from vertex_agent.invoice_chat_agent import discuss

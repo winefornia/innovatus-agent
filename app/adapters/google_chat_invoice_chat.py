@@ -150,10 +150,12 @@ def _download_attachment(resource_name: str) -> bytes | None:
 
 
 def _digest_one_pdf(pdf_bytes: bytes, label: str) -> str:
-    """Run a PDF's bytes through Claude into an order summary, or "" on failure."""
+    """Extract a doc's FULL text (no purpose assumption) so the agent can route it
+    by intent — answer a question about it, look up/edit pricing, or build an order.
+    Returns "" on failure."""
     try:
-        from services.pdf_service import extract_invoice_fields_from_pdf
-        return f"[Attached order PDF: {label}]\n{extract_invoice_fields_from_pdf(pdf_bytes)}"
+        from services.pdf_service import extract_text_from_pdf
+        return f"[Attached document: {label}]\n{extract_text_from_pdf(pdf_bytes)}"
     except Exception as e:  # pragma: no cover - defensive
         log.warning("[inv:gc] PDF digest failed for %s: %s", label, e)
         return ""
