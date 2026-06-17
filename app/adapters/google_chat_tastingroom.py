@@ -223,11 +223,14 @@ def _to_message_body(resp: dict) -> dict:
 def _is_authorized_approver(email: str) -> bool:
     """Only configured approvers (Cecil/Lisa) may act on cards/commands.
 
-    Empty allowlist = open to any authenticated space member (back-compatible).
+    Fail-closed: an empty allowlist (missing/blank/malformed env var) denies
+    everyone rather than opening approval to the whole workspace.
     """
     allow = config.GOOGLE_CHAT_TR_AUTHORIZED_EMAILS
     if not allow:
-        return True
+        log.error("[tr:gc] approver allowlist is empty — denying all "
+                  "(set GOOGLE_CHAT_TR_AUTHORIZED_EMAILS)")
+        return False
     return (email or "").strip().lower() in allow
 
 
