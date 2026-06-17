@@ -120,9 +120,9 @@ def test_retried_message_event_processed_once(monkeypatch):
     tr._seen_messages.clear()
     monkeypatch.setenv("GCHAT_ASYNC", "off")  # exercise the sync path
     calls = []
-    import services.tastingroom_chat_service as chat
-    monkeypatch.setattr(chat, "handle_tastingroom_chat",
-                        lambda text, *, chat_id: calls.append(text) or "ok")
+    import vertex_agent.chat_agent as chat_agent
+    monkeypatch.setattr(chat_agent, "discuss",
+                        lambda text, *, user="": calls.append(text) or "ok")
 
     ev = {
         "chat": {"user": {"email": "cecil.park@winefornia.com"},
