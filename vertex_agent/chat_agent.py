@@ -4,15 +4,24 @@ Staff can type freely — "what's the status of test?", "why is Mira waiting?",
 "what's blocking the June 24 tour?" — and get a context-aware answer. It reads the
 real case (parties, goal state, gaps, history) and explains.
 
-READ-ONLY by design: it answers and explains but never sends email or changes a
-booking. State changes + outbound mail still flow through the approval cards, so
-this conversational layer can't bypass the human-approval safety model.
+It can also ACT on a case on request — send/revise the drafted email, mark
+payment, hand a case to a human, end/remove a case, revoke a decision — by
+routing through the SAME service primitives the approval cards use (see
+vertex_agent.chat_actions). Anything that touches the outside world (sending an
+email, ending/removing a case, revoking) is CONFIRM-FIRST: the assistant stages
+it and only acts on the user's affirming reply. Only allow-listed approvers
+(Cecil/Lisa) ever reach this layer — the Google Chat adapter gates it upstream.
 """
 
 from __future__ import annotations
 
 import os
 
+from vertex_agent.chat_actions import (
+    WRITE_TOOLS,
+    peek_pending,
+    set_current_user,
+)
 from vertex_agent.tools import get_case, list_open_cases, open_cases_status
 
 
@@ -71,9 +80,28 @@ For a multi-case rundown, use short bolded group labels followed by simple bulle
 lines — e.g.  *Ready to send (3)*  then a "• Name — case — what's left" bullet each.
 Use emoji sparingly (one per group label at most), not on every line.
 
-You are READ-ONLY. You do NOT send emails, reschedule, mark paid, or approve. If
-asked to DO something, explain that it happens via the approval cards (a human
-taps to act) and describe what the next card/step will be. Be brief and specific."""
+ACTING ON A CASE — you can also DO things when asked, via these tools:
+- stage_send_email(case) — send the email currently drafted for a case (Josh
+  request, client offer, invoice note, final confirmation, etc.).
+- revise_draft(case, instruction) — edit the not-yet-sent draft (e.g. "warmer",
+  "mention parking"); shows the new version, doesn't send.
+- mark_invoice_sent(case) / mark_paid(case) — record payment progress.
+- manual_handle(case) — hand a case to a human; stops auto-advancing it.
+- stage_cancel_case(case) — end/remove a case (soft-cancel; reversible).
+- stage_revoke_decision(case) — revoke the last decision and reopen a case.
+
+CONFIRM-FIRST PROTOCOL (critical):
+- stage_send_email, stage_cancel_case, and stage_revoke_decision DO NOT act — they
+  return a one-line "reply yes to confirm" question. After calling one, STOP and
+  show that question. Do NOT call confirm_pending_action() in the same turn.
+- When the user's NEXT message confirms ("yes", "send it", "go ahead"), call
+  confirm_pending_action(). When they decline ("no", "never mind"), call
+  cancel_pending_action(). If a "[pending confirmation]" note is present below,
+  the user is replying to exactly that staged action.
+- revise_draft, mark_invoice_sent, mark_paid, and manual_handle are reversible —
+  just do them and report back; no confirmation needed.
+- Only act when the user clearly asks you to. When they're just asking a
+  question, answer it. Always say which case (name + id) you acted on."""
 
 _chat_agent = None
 
@@ -89,7 +117,7 @@ def _get_chat_agent():
             name="tasting_room_assistant",
             description="Conversational, read-only assistant for tasting-room cases.",
             instruction=_CHAT_INSTRUCTION,
-            tools=[open_cases_status, find_cases, get_case, list_open_cases],
+            tools=[open_cases_status, find_cases, get_case, list_open_cases, *WRITE_TOOLS],
         )
     return _chat_agent
 
@@ -100,9 +128,22 @@ def discuss(text: str, *, user: str = "") -> str:
         import asyncio
         from google.adk.runners import InMemoryRunner
 
+        # Identify the acting approver for this turn (audit trail + keys the
+        # per-user confirm store). Each turn is a fresh, memory-less agent, so if
+        # the user has a staged confirm-first action, re-inject it into the prompt
+        # so "yes" resolves to the right thing.
+        set_current_user(user)
+        prompt = text
+        pending = peek_pending(user)
+        if pending:
+            prompt = (
+                f"[pending confirmation] The user has a staged action awaiting their yes/no: "
+                f"\"{pending['summary']}\". Their message below is their reply to it.\n\n{text}"
+            )
+
         async def _run():
             return await asyncio.wait_for(
-                InMemoryRunner(agent=_get_chat_agent(), app_name="tr-chat").run_debug(text, quiet=True),
+                InMemoryRunner(agent=_get_chat_agent(), app_name="tr-chat").run_debug(prompt, quiet=True),
                 timeout=float(os.getenv("TR_AGENT_TIMEOUT", "120")),
             )
 
