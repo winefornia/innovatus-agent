@@ -135,9 +135,20 @@ normalization); lockstep orchestration (SB-ok+JSON-ok, SB-fail-aborts-JSON,
 drift-warning); and real JSON mutation against a temp catalog copy. Also: adapter
 plumbing (welcome on add, unauthorized blocked, dedup).
 
-> The actual LLM tool-selection loop is **not** locally testable here —
-> `google-adk` / `litellm` are in `requirements.txt` but not in the local venv
-> (same constraint as the tasting-room agent). It runs in deploy.
+**Live LLM-loop verification (opt-in).** The real ADK + Claude tool-selection loop
+is verifiable locally once `google-adk` + `litellm` are installed (they're in
+`requirements.txt`) and a real `ANTHROPIC_API_KEY` is in `.env`. It's gated off by
+default so the normal `pytest` run makes no API calls:
+
+```
+RUN_LLM_TESTS=1 PYTHONPATH=. .venv/bin/python -m pytest \
+    tests/integration/test_invoice_agent_loop.py -q
+```
+
+It asserts a read query answers without staging, and a price-edit stages a
+confirm-first action without writing (write paths are mocked, so it can't mutate).
+`vertex_agent/invoice_chat_agent._ensure_anthropic_key()` backfills the key from
+`app.config`/`.env` so the agent runs regardless of import order.
 
 ### 7b. Deploy (the LLM loop)
 
