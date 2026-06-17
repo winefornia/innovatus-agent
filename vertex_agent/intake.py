@@ -63,13 +63,26 @@ def intake_email(*, subject: str, sender: str, body: str, to_email: str = "",
         gmail_thread_id=gmail_thread_id, subject=subject, facts=facts,
     )
     is_new = existing is None
-    has_useful = bool(facts.get("client_email") or facts.get("requested_date") or facts.get("client_name"))
-    if is_new and message_type == "unclassified" and not has_useful:
+    # ONLY a genuine website form submission that names a client may CREATE a new
+    # case. Everything else — Josh/client replies, Square reports, marketing blasts
+    # — must attach to an EXISTING case (by thread or context). If it matches none,
+    # quarantine it for human review instead of minting a nameless TASTING-…-UNKNOWN
+    # case. (A bare parsed date is NOT enough: Square's "Sales Summary for June 12"
+    # used to become a reservation.)
+    form_with_identity = message_type == "squarespace_form" and bool(
+        facts.get("client_name") or facts.get("client_email")
+    )
+    if is_new and not form_with_identity:
+        if message_type == "squarespace_form":
+            reason = "Website form submission with no client name or email — needs a human look."
+        else:
+            reason = (f"'{message_type}' email matched no existing reservation; only website form "
+                      f"submissions open a new case, so this is quarantined for review.")
         try:
             repository.insert_unresolved_event(UnresolvedEvent(
                 source_message_id=gmail_message_id, gmail_thread_id=gmail_thread_id,
                 subject=subject, from_email=sender, message_type=message_type,
-                reason="Unclassified email with no useful facts and no matching reservation.",
+                reason=reason,
                 raw_payload={"subject": subject, "from": sender, "facts": facts},
             ))
         except Exception:

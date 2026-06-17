@@ -215,6 +215,11 @@ def _decode_body(payload: dict) -> str:
     for h in htmls:
         if h and h.strip():
             text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", h, flags=re.I | re.S)
+            # Break/block boundaries → newlines BEFORE stripping the rest, so an
+            # HTML form (label/value per <br> or table row) keeps one field per
+            # line. Otherwise everything collapses to one space-joined line and
+            # the form parser reads only the first field.
+            text = re.sub(r"(?i)<\s*(?:br|/p|/div|/tr|/td|/th|/li|/h[1-6]|/table)\s*/?>", "\n", text)
             text = re.sub(r"<[^>]+>", " ", text)
             text = html.unescape(text)
             text = re.sub(r"[ \t\r\f]+", " ", text)
