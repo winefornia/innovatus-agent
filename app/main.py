@@ -358,6 +358,30 @@ async def google_chat_webhook(request: Request):
         )
     except Exception:
         pass
+    # Front door: the intent-routing chat agent. It extracts any attached/linked
+    # doc to full text, keeps the user's message, and routes by intent (answer a
+    # question, look up/edit pricing, or create an invoice). The deterministic
+    # order wizard is preserved at /webhooks/google-chat/graph.
+    from app.adapters.google_chat_invoice_chat import handle_invoice_chat_event
+    return await handle_invoice_chat_event(event)
+
+
+@app.post("/webhooks/google-chat/graph")
+async def google_chat_graph_webhook(request: Request):
+    """The original deterministic invoice-graph wizard (order-only), kept as a
+    fallback. The default /webhooks/google-chat now routes to the chat agent."""
+    _log = logging.getLogger("winefornia.main")
+    mode = (os.getenv("GCHAT_VERIFY", "observe") or "observe").lower()
+    if mode != "off":
+        ok, reason = await asyncio.to_thread(
+            _verify_google_chat_token, request.headers.get("authorization", "")
+        )
+        _log.info("[gc:auth:graph] %s — %s (mode=%s)", "ok" if ok else "FAILED", reason, mode)
+        if mode == "enforce" and not ok:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+    event = await _safe_event_json(request)
+    if event is None:
+        return {}
     return await handle_google_chat_event(event)
 
 
