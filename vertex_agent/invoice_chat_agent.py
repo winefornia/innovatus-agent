@@ -90,6 +90,24 @@ or "**"."""
 _chat_agent = None
 
 
+def _ensure_anthropic_key() -> None:
+    """Make sure ANTHROPIC_API_KEY is in os.environ before LiteLLM looks for it.
+
+    LiteLLM reads the key from os.environ, but this module can be the first thing
+    imported on a given entry path — and the key may live only in .env / app.config
+    (loaded by load_dotenv). Importing app.config runs load_dotenv() and gives us
+    the value to backfill. No-op in prod, where the key is a real env var.
+    """
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return
+    try:
+        from app.config import ANTHROPIC_API_KEY
+        if ANTHROPIC_API_KEY:
+            os.environ["ANTHROPIC_API_KEY"] = ANTHROPIC_API_KEY
+    except Exception:  # pragma: no cover - defensive
+        pass
+
+
 def _get_chat_agent():
     """Build the ADK assistant lazily so this module imports without google-adk."""
     global _chat_agent
@@ -112,6 +130,7 @@ def discuss(text: str, *, user: str = "") -> str:
         import asyncio
         from google.adk.runners import InMemoryRunner
 
+        _ensure_anthropic_key()
         # Identify the acting approver for this turn (audit trail + keys the
         # per-user confirm store). Each turn is a fresh, memory-less agent, so if
         # the user has a staged confirm-first action, re-inject it into the prompt
