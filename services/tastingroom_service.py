@@ -224,24 +224,62 @@ def parse_primary_time(text: str | None) -> Optional[str]:
     return candidates[0]["start_time"] if candidates else None
 
 
-def parse_squarespace_form(body: str) -> dict[str, Any]:
-    fields: dict[str, str] = {}
-    for line in body.splitlines():
-        if ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        key_norm = key.strip().lower()
-        fields[key_norm] = value.strip()
+# Known Squarespace form field labels (longer/more-specific variants first so the
+# alternation matches them over their shorter substrings). Used to label-anchor
+# extraction so the body parses whether fields are "Label: value", "Label<br>value"
+# (collapsed to one line after tag-strip), or table cells ("Label" then "value" on
+# the next line) — i.e. regardless of how the form HTML was authored.
+_FORM_LABELS = (
+    r"full name|first name|last name|name|"
+    r"email address|e-mail|email|"
+    r"phone number|phone|"
+    r"date requested|requested date|date|"
+    r"time requested|time preferred|time|"
+    r"number of guests|no\. of guests|# of guests|party size|guests|"
+    r"production tour and tasting|experience type|experience|"
+    r"questions ?/ ?comments|comments|message|notes"
+)
+_FORM_LABEL_RE = re.compile(rf"(?i)\b({_FORM_LABELS})\b\s*:?\s*")
 
-    name = fields.get("name")
-    email = fields.get("email")
-    phone = fields.get("phone")
-    requested_date = parse_date(fields.get("date requested"))
-    requested_time = parse_time(fields.get("time"))
-    guests_raw = fields.get("number of guests", "")
-    guest_count = int(guests_raw) if guests_raw.isdigit() else None
-    experience = fields.get("production tour and tasting")
-    notes = fields.get("questions / comments")
+
+def parse_squarespace_form(body: str) -> dict[str, Any]:
+    text = body or ""
+    # Label-anchored: each known label's value is the text up to the NEXT label.
+    matches = list(_FORM_LABEL_RE.finditer(text))
+    fields: dict[str, str] = {}
+    for i, m in enumerate(matches):
+        label = re.sub(r"\s+", " ", m.group(1).strip().lower())
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        value = text[m.end():end].strip().strip(":").strip()
+        if value:                                        # take the first line of the value
+            value = value.splitlines()[0].strip()
+        if label and value and label not in fields:
+            fields[label] = value
+
+    def get(*keys: str) -> Optional[str]:
+        for k in keys:                                   # exact label first
+            if fields.get(k):
+                return fields[k]
+        for fk, fv in fields.items():                    # then substring match
+            if fv and any(k in fk for k in keys):
+                return fv
+        return None
+
+    name = get("full name", "name")
+    if not name:                                         # split first/last forms
+        first, last = get("first name"), get("last name")
+        name = " ".join(p for p in (first, last) if p) or None
+    email = get("email", "email address", "e-mail")
+    if email and "@" not in email:                       # guard against a mis-segmented value
+        email = None
+    phone = get("phone", "phone number")
+    requested_date = parse_date(get("date requested", "requested date", "date"))
+    requested_time = parse_time(get("time", "time requested", "time preferred"))
+    guests_raw = get("number of guests", "# of guests", "party size", "guests") or ""
+    guest_match = re.search(r"\d+", guests_raw)
+    guest_count = int(guest_match.group()) if guest_match else None
+    experience = get("production tour and tasting", "experience", "tour")
+    notes = get("questions / comments", "comments", "message", "notes")
 
     return {
         "client_name": name,
