@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import os
 
-from vertex_agent.tools import get_case, list_open_cases
+from vertex_agent.tools import get_case, list_open_cases, open_cases_status
 
 
 def find_cases(query: str) -> list[dict]:
@@ -37,7 +37,7 @@ def find_cases(query: str) -> list[dict]:
         rows = (c.table("reservations")
                 .select("reservation_id,client_name,client_email,current_state,requested_date")
                 .ilike("reservation_id", f"%{q.upper()}%").limit(8).execute().data) or []
-    return rows
+    return [r for r in rows if not str(r.get("reservation_id", "")).startswith("TASTING-SMOKE-")]
 
 
 _CHAT_INSTRUCTION = """\
@@ -45,10 +45,13 @@ You are the Winefornia tasting-room assistant in Google Chat. Staff type questio
 answer concisely with REAL case context.
 
 Tools:
+- open_cases_status() — the STATUS board: every open case by client name + case id,
+  who's confirmed, and what each is waiting on. Use for "status" / "what's open" /
+  "where are things" questions. Present it as a clean per-case list.
 - find_cases(name) — resolve a name ("test", "Mira") to a reservation_id.
 - get_case(reservation_id) — full detail: the three parties (client, Winefornia,
   Josh), the goal_state, the open `gaps`, claims, and event history.
-- list_open_cases() — overview of everything in flight.
+- list_open_cases() — raw open-case list with goal_state.
 
 Answer what's asked: current status, who we're waiting on, what's blocking, the
 next step, what's been done. Quote concrete facts (dates, names, states).
@@ -71,7 +74,7 @@ def _get_chat_agent():
             name="tasting_room_assistant",
             description="Conversational, read-only assistant for tasting-room cases.",
             instruction=_CHAT_INSTRUCTION,
-            tools=[find_cases, get_case, list_open_cases],
+            tools=[open_cases_status, find_cases, get_case, list_open_cases],
         )
     return _chat_agent
 
