@@ -544,7 +544,8 @@ async def _download_attachment(attachment: dict, sender_email: str = "") -> byte
     if drive_id:
         try:
             from services.drive_service import download_drive_file
-            return await asyncio.to_thread(download_drive_file, drive_id)
+            # Impersonate the sender (the file owner) so we can read files they own.
+            return await asyncio.to_thread(download_drive_file, drive_id, sender_email)
         except Exception as e:
             log.error("[gc:download] Drive download failed: %s", e)
             return None
@@ -720,7 +721,7 @@ async def _handle_message(event: dict, space_id: str, thread_id: str, config: di
     if not is_new_pdf and text:
         from services.drive_service import download_drive_file, extract_drive_file_ids
         for fid in extract_drive_file_ids(text):
-            pdf_bytes = await asyncio.to_thread(download_drive_file, fid)
+            pdf_bytes = await asyncio.to_thread(download_drive_file, fid, sender_id)
             if not pdf_bytes:
                 continue
             try:
