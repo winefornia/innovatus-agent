@@ -852,6 +852,8 @@ def _best_slot(facts: dict[str, Any], reservation: Reservation) -> dict:
 
 
 def draft_for_action(reservation: Reservation, action: str) -> dict[str, str]:
+    if action == "stale_follow_up":
+        return {}  # internal review card — no email to send
     client_name = _client_salutation(reservation.client_name)
     guests = _guest_phrase(reservation.guest_count)
     requested_date = _friendly_date(reservation.requested_date) or "the requested date"
@@ -1022,6 +1024,13 @@ def _header(reservation: Reservation) -> str:
 def approval_message(reservation: Reservation, action: str, draft: dict[str, str]) -> str:
     header = _header(reservation)
 
+    if action == "stale_follow_up":
+        waiting = (reservation.current_state or "").replace("_", " ").lower()
+        return (
+            f"Still waiting\n\n{header}\n\n"
+            f"This case has been sitting in *{waiting}* with no reply for a while. "
+            f"How do you want to move it forward?"
+        )
     if action == "ask_internal_availability":
         return (
             f"New tasting request\n\n"
@@ -1085,6 +1094,13 @@ def _rows_for_action(action: str, action_id: str) -> list[list[tuple[str, str]]]
              ("Already paid", f"tr:{action_id}:paid")],
             [("Send confirmation", f"tr:{action_id}:queue_final"),
              ("I'll handle it", f"tr:{action_id}:escalate")],
+        ]
+    if action == "stale_follow_up":
+        return [
+            [("Resend the request", f"tr:{action_id}:resend"),
+             ("Ask client for a new time", f"tr:{action_id}:ask_client")],
+            [("I'll handle it", f"tr:{action_id}:escalate"),
+             ("Close the case", f"tr:{action_id}:close")],
         ]
     return [
         [("Send it", f"tr:{action_id}:approve"), ("Don't send", f"tr:{action_id}:reject")],
@@ -1172,6 +1188,15 @@ def process_action_decision(action_id: str, decision: str, decided_by: str = "te
 
     if action_type == "review_payment_status":
         return _process_payment_decision(
+            action=action,
+            reservation=reservation,
+            decision=decision,
+            decided_by=decided_by,
+            decided_at=now,
+        )
+
+    if action_type == "stale_follow_up":
+        return _process_stale_followup_decision(
             action=action,
             reservation=reservation,
             decision=decision,
@@ -1340,6 +1365,34 @@ def _send_calendar_invites(reservation_id: str, reservation: Optional[dict]) -> 
         )
     except Exception as exc:
         logging.warning("[tastingroom] calendar invite failed for %s: %s", reservation_id, exc)
+
+
+def _process_stale_followup_decision(*, action, reservation, decision, decided_by, decided_at):
+    """A stale-case follow-up tap: resend the outreach, ask the client for a new
+    time, close the case, or (handled upstream) escalate. Every path MOVES the case
+    so it can't stay hung. All deterministic functions — the LLM isn't involved."""
+    from db.models import ReservationEvent
+    from db.repository import insert_reservation_event, update_reservation, update_reservation_action
+
+    rid = action["reservation_id"]
+    update_reservation_action(action["action_id"], status="completed", decided_by=decided_by, decided_at=decided_at)
+    insert_reservation_event(ReservationEvent(
+        reservation_id=rid, event_type="stale_follow_up_decision", actor=decided_by,
+        source_channel="google_chat", summary=f"Stale follow-up: {decision}"))
+
+    if decision == "close":
+        update_reservation(rid, current_state="CANCELLED_OR_DEFERRED", recommended_action=None)
+        return {"ok": True, "status": "closed", "reservation_id": rid}
+    if decision == "resend":
+        from vertex_agent.intake import coordinate_reservation
+        nxt = coordinate_reservation(rid) or {}
+        return {"ok": True, "status": "resent", "reservation_id": rid,
+                "next_action_id": (nxt.get("proposed_action") or {}).get("action_id")}
+    if decision == "ask_client":
+        nid = (create_action_request(_reservation_from_row(reservation), "ask_client_alternatives",
+                                     source_message_id=action["action_id"]) if reservation else None)
+        return {"ok": True, "status": "asked_client", "reservation_id": rid, "next_action_id": nid}
+    return {"ok": False, "error": "Unknown follow-up decision.", "reservation_id": rid}
 
 
 def _process_internal_availability_decision(

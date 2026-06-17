@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 from app.config import (
@@ -207,6 +209,54 @@ def process_gmail_message(message_id: str, *, labels: list[str] | None = None) -
         "labels": applied_labels,
         **result_meta,
     }
+
+
+# How long a case may sit in each WAITING state before we surface a follow-up card.
+_STALE_HOURS = {
+    "WAITING_FOR_JOSH": float(os.getenv("TR_STALE_JOSH_HOURS", "48")),
+    "WAITING_FOR_CLIENT_REPLY": float(os.getenv("TR_STALE_CLIENT_HOURS", "72")),
+    "WAITING_FOR_PAYMENT": float(os.getenv("TR_STALE_PAYMENT_HOURS", "120")),
+}
+
+
+def sweep_stale_cases() -> dict[str, Any]:
+    """Find cases stuck WAITING past their threshold and post a deterministic
+    follow-up card (Resend / Ask client / Escalate / Close) so a human decides —
+    nothing hangs forever. Self-limiting: skips a case that already has a pending
+    follow-up card, so it never spams. Never raises out."""
+    from db.repository import list_recent_reservations
+    from services.tastingroom_chat_service import _latest_pending_action
+    from services.tastingroom_service import _reservation_from_row, create_action_request
+
+    posted: list[str] = []
+    now = datetime.now(timezone.utc)
+    for r in list_recent_reservations(limit=80):
+        threshold = _STALE_HOURS.get(r.get("current_state") or "")
+        if threshold is None:
+            continue
+        updated = r.get("updated_at")
+        if not updated:
+            continue
+        try:
+            ts = datetime.fromisoformat(str(updated).replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+        except Exception:
+            continue
+        if (now - ts).total_seconds() / 3600.0 < threshold:
+            continue
+        rid = r["reservation_id"]
+        existing = _latest_pending_action(rid, preferred_type="stale_follow_up")
+        if existing and existing.get("action_type") == "stale_follow_up" and existing.get("status") == "pending":
+            continue  # already nudged — don't spam
+        try:
+            create_action_request(_reservation_from_row(r), "stale_follow_up")
+            posted.append(rid)
+        except Exception as exc:
+            logging.warning("[tastingroom sweep] follow-up post failed for %s: %s", rid, exc)
+    if posted:
+        logging.info("[tastingroom sweep] posted %d stale follow-up(s): %s", len(posted), posted)
+    return {"posted_followups": posted, "count": len(posted)}
 
 
 def poll_once(max_results: int = 10) -> dict[str, Any]:
