@@ -333,8 +333,13 @@ def _decide_and_advance(action_id: str, decision: str, decided_by: str) -> dict:
     just an inbound email, drives the case to its next step. Runs sync (off-loop)."""
     from services.tastingroom_service import process_action_decision
     result = process_action_decision(action_id, decision, decided_by)
+    # Re-coordinate only after a STATUS-RESOLVING tap (yes/no/paid/…), which tells
+    # us a party's answer and lets the agent propose the next step. Do NOT
+    # re-coordinate after "approve" — that SENDS an outreach (e.g. the Josh email),
+    # after which we WAIT for the reply (the watcher resumes on the inbound). This
+    # is what prevents a re-send loop. reject/escalate are terminal.
     if (result.get("ok")
-            and decision not in ("reject", "escalate")
+            and decision not in ("approve", "reject", "escalate")
             and result.get("status") not in ("rejected", "escalated")
             and result.get("reservation_id")):
         try:
