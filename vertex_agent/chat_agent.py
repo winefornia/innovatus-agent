@@ -115,7 +115,7 @@ def _get_chat_agent():
         _chat_agent = LlmAgent(
             model=LiteLlm(model=os.getenv("TR_AGENT_MODEL", "anthropic/claude-sonnet-4-6")),
             name="tasting_room_assistant",
-            description="Conversational, read-only assistant for tasting-room cases.",
+            description="Conversational assistant for tasting-room cases: answers questions and drives cases (confirm-first for outside-world actions).",
             instruction=_CHAT_INSTRUCTION,
             tools=[open_cases_status, find_cases, get_case, list_open_cases, *WRITE_TOOLS],
         )
