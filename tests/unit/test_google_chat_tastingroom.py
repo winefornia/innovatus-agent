@@ -125,7 +125,7 @@ def test_retried_message_event_processed_once(monkeypatch):
                         lambda text, *, chat_id: calls.append(text) or "ok")
 
     ev = {
-        "chat": {"user": {"email": "x@y.com"},
+        "chat": {"user": {"email": "cecil.park@winefornia.com"},
                  "messagePayload": {"space": {"name": "spaces/S"},
                                     "message": {"name": "spaces/S/messages/dup", "text": "status"}}},
     }
@@ -203,6 +203,28 @@ def test_send_gives_up_after_attempts(monkeypatch):
     monkeypatch.setattr(tr, "_send_message", lambda s, b: (False, "500: boom"))
     monkeypatch.setattr(tr.time, "sleep", lambda *_: None)
     assert tr._send_with_retry("spaces/S", {"text": "x"}, attempts=2) is None
+
+
+# ── approver allowlist (Cecil + Lisa) ─────────────────────────────────────────
+def test_authorized_emails_default_includes_cecil_and_lisa():
+    allow = tr.config.GOOGLE_CHAT_TR_AUTHORIZED_EMAILS
+    assert "cecil.park@winefornia.com" in allow
+    assert "lisa@innovatuswine.com" in allow
+
+
+def test_unauthorized_approver_is_blocked(monkeypatch):
+    called = []
+    import services.tastingroom_service as svc
+    monkeypatch.setattr(svc, "process_action_decision",
+                        lambda *a, **k: called.append(a) or {"ok": True})
+    ev = {
+        "chat": {"user": {"email": "stranger@nope.com"},
+                 "buttonClickedPayload": {"space": {"name": "spaces/AAAA"},
+                                          "message": {"name": "spaces/AAAA/messages/1"}}},
+        "commonEventObject": {"parameters": {"action": "tr:abc:approve"}},
+    }
+    asyncio.run(tr.handle_tastingroom_event(ev))
+    assert called == []  # unauthorized → decision engine never invoked
 
 
 # ── duplicate click on an already-decided action stays silent ─────────────────

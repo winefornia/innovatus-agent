@@ -77,6 +77,15 @@ GOOGLE_CHAT_TR_SIGNER_EMAIL = os.getenv(
     "service-275073979299@gcp-sa-gsuiteaddons.iam.gserviceaccount.com",
 )
 GOOGLE_CHAT_TR_ENDPOINT_URL = os.getenv("GOOGLE_CHAT_TR_ENDPOINT_URL", _TR_DEFAULT_URL)
+# Only these Google accounts may approve/act on tasting-room cards or commands.
+# Empty list = open to any authenticated space member (back-compatible). Covers
+# Cecil + both of Lisa's addresses by default.
+GOOGLE_CHAT_TR_AUTHORIZED_EMAILS = [
+    e.strip().lower() for e in os.getenv(
+        "GOOGLE_CHAT_TR_AUTHORIZED_EMAILS",
+        "cecil.park@winefornia.com,lisa@innovatuswine.com,lisa@winefornia.com",
+    ).split(",") if e.strip()
+]
 
 # Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL", "")

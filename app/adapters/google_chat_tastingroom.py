@@ -212,6 +212,17 @@ def _to_message_body(resp: dict) -> dict:
 
 # ── Inbound event handling ───────────────────────────────────────────────────
 
+def _is_authorized_approver(email: str) -> bool:
+    """Only configured approvers (Cecil/Lisa) may act on cards/commands.
+
+    Empty allowlist = open to any authenticated space member (back-compatible).
+    """
+    allow = config.GOOGLE_CHAT_TR_AUTHORIZED_EMAILS
+    if not allow:
+        return True
+    return (email or "").strip().lower() in allow
+
+
 def _text_resp(msg: str, *, update: bool = False) -> dict:
     resp: dict = {"text": msg[:4000]}
     resp["actionResponse"] = {"type": "UPDATE_MESSAGE" if update else "NEW_MESSAGE"}
@@ -282,7 +293,8 @@ async def handle_tastingroom_event(event: dict) -> dict:
 async def _route(ev: dict) -> dict:
     etype = ev.get("type", "")
     user = ev.get("user", {}) or {}
-    decided_by = "gchat_" + (user.get("email") or user.get("name") or "unknown")
+    email = (user.get("email") or "").strip().lower()
+    decided_by = "gchat_" + (email or user.get("name") or "unknown")
     space_name = (ev.get("space") or {}).get("name") or ""
 
     if etype == "ADDED_TO_SPACE":
@@ -292,6 +304,12 @@ async def _route(ev: dict) -> dict:
         )
     if etype == "REMOVED_FROM_SPACE":
         return {"text": ""}
+
+    # Only authorized approvers (Cecil/Lisa) may act on cards or commands.
+    if etype in ("CARD_CLICKED", "MESSAGE") and not _is_authorized_approver(email):
+        log.warning("[tr:gc] unauthorized actor %r blocked on %s", email, etype)
+        return _text_resp("You're not authorized to act on tasting-room reservations.",
+                          update=(etype == "CARD_CLICKED"))
 
     if etype == "CARD_CLICKED":
         async with _lock_for(space_name):
