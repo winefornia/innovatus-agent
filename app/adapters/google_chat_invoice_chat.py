@@ -149,29 +149,63 @@ def _download_attachment(resource_name: str) -> bytes | None:
     return None
 
 
-def _digest_pdf_attachments(msg: dict) -> str:
-    """Return digested text for any PDF attachments on the message, else ""."""
-    attachments = msg.get("attachment") or msg.get("attachments") or []
-    if not isinstance(attachments, list):
+def _digest_one_pdf(pdf_bytes: bytes, label: str) -> str:
+    """Run a PDF's bytes through Claude into an order summary, or "" on failure."""
+    try:
+        from services.pdf_service import extract_invoice_fields_from_pdf
+        return f"[Attached order PDF: {label}]\n{extract_invoice_fields_from_pdf(pdf_bytes)}"
+    except Exception as e:  # pragma: no cover - defensive
+        log.warning("[inv:gc] PDF digest failed for %s: %s", label, e)
         return ""
+
+
+def _digest_pdfs(msg: dict, text: str) -> str:
+    """Digest every PDF referenced by the message into order text, else "".
+
+    Covers all three shapes staff use:
+      - an uploaded Chat file   → attachmentDataRef.resourceName (Chat media API)
+      - a Google Drive file     → driveDataRef.driveFileId (Drive API, delegated)
+      - a pasted Drive link     → drive.google.com/open?id=<ID> etc. in the text
+    """
+    from services.drive_service import download_drive_file, extract_drive_file_ids
+
     chunks: list[str] = []
-    for att in attachments:
-        content_type = (att.get("contentType") or att.get("content_type") or "").lower()
-        name = att.get("contentName") or att.get("name") or "attachment"
-        if "pdf" not in content_type and not str(name).lower().endswith(".pdf"):
+    seen_drive: set[str] = set()
+
+    attachments = msg.get("attachment") or msg.get("attachments") or []
+    if isinstance(attachments, list):
+        for att in attachments:
+            name = att.get("contentName") or att.get("name") or "attachment"
+            content_type = (att.get("contentType") or att.get("content_type") or "").lower()
+            is_pdf = "pdf" in content_type or str(name).lower().endswith(".pdf")
+            ref = (att.get("attachmentDataRef") or {}).get("resourceName")
+            drive_id = (att.get("driveDataRef") or {}).get("driveFileId")
+            pdf_bytes = None
+            if ref:                       # uploaded Chat file
+                if not is_pdf:
+                    continue
+                pdf_bytes = _download_attachment(ref)
+            elif drive_id:                # Drive file attached in Chat
+                seen_drive.add(drive_id)
+                pdf_bytes = download_drive_file(drive_id)
+                if not pdf_bytes:
+                    log.info("[inv:gc] Drive attachment %s (%s) could not be downloaded", name, drive_id)
+            if pdf_bytes:
+                got = _digest_one_pdf(pdf_bytes, name)
+                if got:
+                    chunks.append(got)
+
+    # Drive links pasted into the message text.
+    for fid in extract_drive_file_ids(text or ""):
+        if fid in seen_drive:
             continue
-        ref = (att.get("attachmentDataRef") or {}).get("resourceName")
-        if not ref:
-            log.info("[inv:gc] PDF %s has no downloadable ref (Drive file?) — skipping", name)
-            continue
-        pdf_bytes = _download_attachment(ref)
-        if not pdf_bytes:
-            continue
-        try:
-            from services.pdf_service import extract_invoice_fields_from_pdf
-            chunks.append(f"[Attached order PDF: {name}]\n{extract_invoice_fields_from_pdf(pdf_bytes)}")
-        except Exception as e:  # pragma: no cover - defensive
-            log.warning("[inv:gc] PDF digest failed for %s: %s", name, e)
+        seen_drive.add(fid)
+        pdf_bytes = download_drive_file(fid)
+        if pdf_bytes:
+            got = _digest_one_pdf(pdf_bytes, f"Drive file {fid}")
+            if got:
+                chunks.append(got)
+
     return "\n\n".join(chunks)
 
 
@@ -284,8 +318,9 @@ async def _handle_message(ev: dict, decided_by: str) -> dict:
     msg = ev.get("message", {}) or {}
     text = (msg.get("argumentText") or msg.get("text") or "").strip()
 
-    # Digest any attached order PDF into the input state the agent reads.
-    pdf_text = await asyncio.to_thread(_digest_pdf_attachments, msg)
+    # Digest any attached / linked order PDF into the input state the agent reads
+    # (uploaded Chat file, Drive attachment, or a pasted Drive link).
+    pdf_text = await asyncio.to_thread(_digest_pdfs, msg, text)
     if pdf_text:
         text = f"{text}\n\n{pdf_text}".strip() if text else pdf_text
 
