@@ -79,24 +79,34 @@ All channels normalize to `NormalizedMessage` before reaching the invoice graph.
 
 ## Tasting room agent
 
-A separate case-desk workflow (`agents/case_desk_graph.py`) handles reservation emails end-to-end:
+The tasting-room workflow runs on a **goal-driven Google Vertex ADK agent** (Claude via
+LiteLLM) in `vertex_agent/`. It was migrated off LangGraph in June 2026 — the old
+`case_desk_graph` / `case_judge` / `case_memory` / `safety_guards` pipeline has been
+deleted, and the Vertex agent is now the sole tasting-room engine.
 
 ```
 Gmail inbox
-  ↓  (tastingroom_mail_watcher.py polls every 60s)
-tastingroom_mailbox.py  — candidate filtering, dedup, label management
+  ↓  (scripts/tastingroom_mail_watcher.py polls every ~60s)
+services/tastingroom_mailbox.py  — candidate filtering, dedup, label management
   ↓
-case_desk_graph.py  — 9-node LangGraph pipeline:
-  store_raw_event → extract_claims → resolve_case → persist_claims
-  → build_case_bundle → judge_case → save_case_judgment
-  → update_reservation_cache → validate_and_act
+vertex_agent/intake.py → coordinate_email()
+vertex_agent/agent.py  — Claude reads the case, derives the goal-state gap (vertex_agent/goal_model.py),
+                          and proposes the single next action that closes the biggest gap
   ↓
-tastingroom_bot.py  — Telegram notifications with inline approve/reject buttons
+Google Chat approval card  (/webhooks/google-chat/tastingroom)
   ↓
-Cecil taps a button → process_action_decision() → sends email via Gmail
+Cecil taps approve / reject / escalate → process_action_decision() → sends email via Gmail
+  ↓
+coordinate_reservation() proposes the next step
 ```
 
-The judgment layer (Claude Sonnet) reads the full case bundle and returns a structured `CaseJudgment` with next-best-action, confidence, and interrupt level. Actions that need human approval get sent to Telegram immediately. All reservation state lives in Supabase (`reservations`, `availability_claims`, `case_judgments`, `reservation_action_requests`).
+Instead of a state machine, the agent **derives** the next action from goal sub-conditions
+(two case types — production_tour vs standard; party priority Cecil → Customer → Josh).
+The HITL gate is preserved: no email is ever sent without a human tapping a Google Chat
+card, and any action below `0.6` confidence is downgraded to staff review
+(`vertex_agent/tools.py`). Staff can also chat the agent directly (`vertex_agent/chat_agent.py`).
+All reservation state lives in Supabase (`reservations`, `availability_claims`,
+`reservation_events`, `reservation_action_requests`, `raw_email_events`).
 
 ## Repo structure
 
@@ -106,16 +116,23 @@ winefornia-agent/
     config.py               # env vars
     main.py                 # FastAPI: /intake, /intake/pdf, /webhooks/*
     adapters/
-      google_chat_adapter.py  # Google Chat event handler
+      google_chat_adapter.py        # Google Chat — invoice cards/wizards
+      google_chat_invoice_chat.py   # Google Chat — invoice chat assistant
+      google_chat_tastingroom.py    # Google Chat — tasting-room approval cards + chat
     data/
       customers.json          # customers synced from Square (gitignored — PII)
       product_catalog.json    # wine SKUs with MSRP
       pricing_tiers.json      # tier multipliers
-  agents/
+  agents/                     # LangGraph — invoice only
     invoice_graph.py          # LangGraph invoice workflow  ← main file
-    case_desk_graph.py        # current Gmail tasting room reservation workflow
-    tastingroom_graph.py      # legacy/smoke-test tasting room workflow
     supervisor_graph.py       # intent routing types
+  vertex_agent/               # Google Vertex ADK — tasting-room agent (Claude via LiteLLM)
+    agent.py                  # root coordinator LlmAgent (goal-driven, HITL preserved)
+    goal_model.py             # derive_goal_state() — goal sub-conditions, no state machine
+    intake.py                 # coordinate_email() / coordinate_reservation() (no LangGraph)
+    tools.py                  # ADK tools: get_case, list_open_cases, propose_action
+    chat_agent.py             # conversational tasting-room assistant (Google Chat)
+    invoice_chat_agent.py     # conversational invoicing assistant (Google Chat)
   services/
     gateway.py              # channel normalization (NormalizedMessage)
     tool_registry.py        # Square/Gmail/Supabase tool wrappers with risk labels
@@ -128,8 +145,8 @@ winefornia-agent/
     product_service.py      # product search + deterministic pricing
     gmail_service.py        # Gmail OAuth: intake labels, send receipt
     pdf_service.py          # PDF → text extraction
-    tastingroom_service.py  # tasting room reservation logic
-    tastingroom_mailbox.py  # Gmail poll for tasting room emails → case_desk_graph
+    tastingroom_service.py  # tasting room reservation logic + process_action_decision()
+    tastingroom_mailbox.py  # Gmail poll for tasting room emails → vertex_agent.intake
   db/
     schema.sql              # all tables: invoice_logs, reservations, agent_cases,
                             #   trace_events, failure_labels, availability_claims, etc.
@@ -140,10 +157,10 @@ winefornia-agent/
   scripts/
     google_auth.py          # generate Gmail OAuth token.json
     tastingroom_*.py        # tasting room smoke tests and utilities
-  bot.py                    # Telegram invoice bot (long polling, primary interface)
-  tastingroom_bot.py        # Telegram tasting room bot
+  bot.py                    # Telegram invoice bot (long polling)
+  cli.py                    # local CLI to drive the invoice graph through interrupts
   requirements.txt
-  fly.toml                  # Fly.io deployment (web + bot + tastingroom processes)
+  fly.toml                  # Fly.io deployment (web + tastingroom_watcher processes)
   .env.example
 ```
 
@@ -174,11 +191,13 @@ uvicorn app.main:app --reload
 | `SQUARE_ACCESS_TOKEN` | dev only | developer.squareup.com → Sandbox |
 | `SQUARE_LOCATION_ID` | dev only | Square dashboard → Sandbox Locations |
 | `SQUARE_ENVIRONMENT` | dev only | `sandbox` or `production` (default: sandbox) |
-| `TELEGRAM_BOT_TOKEN` | yes (bot) | @BotFather on Telegram |
-| `TELEGRAM_TASTINGROOM_BOT_TOKEN` | yes (tasting) | @BotFather on Telegram |
-| `TELEGRAM_APPROVAL_CHAT_ID` | yes (tasting) | Telegram chat ID for approval messages |
-| `TELEGRAM_TASTINGROOM_AUTHORIZED_CHAT_IDS` | optional | comma-separated Telegram chat IDs; defaults to `TELEGRAM_APPROVAL_CHAT_ID` |
-| `TELEGRAM_TASTINGROOM_AUTHORIZED_USER_IDS` | optional | comma-separated Telegram user IDs allowed to use tasting bot |
+| `TELEGRAM_BOT_TOKEN` | yes (invoice bot) | @BotFather on Telegram |
+| `GCHAT_VERIFY` | yes (prod) | `enforce` to require valid Google Chat tokens (`observe`/`off` are dev-only) |
+| `GOOGLE_CHAT_TR_SPACE` | yes (tasting) | tasting-room Chat space `spaces/AAAA…` where approval cards post (unset = dormant) |
+| `GOOGLE_CHAT_TR_AUTHORIZED_EMAILS` | yes (tasting) | comma-separated emails allowed to approve tasting-room actions (fail-closed: empty = deny all) |
+| `GOOGLE_TASTINGROOM_SA_JSON_B64` | yes (tasting) | base64 service-account JSON for the tasting-room Chat app |
+| `GOOGLE_CHAT_INVCHAT_AUTHORIZED_EMAILS` | optional | emails allowed in the invoice-chat Chat space (fail-closed) |
+| `TR_AGENT_MODEL` | optional | tasting-room agent model (default Claude Sonnet via LiteLLM) |
 | `SUPABASE_URL` | yes | Supabase dashboard → Settings → API |
 | `SUPABASE_SERVICE_KEY` | yes | Supabase dashboard → Settings → API → service_role |
 | `POSTGRES_CONNECTION_STRING` | yes | Supabase dashboard → Settings → Database (port 6543) |
@@ -197,10 +216,13 @@ POST /intake                      — text intake (email forward, Zapier, n8n)
 POST /intake/pdf                  — direct PDF upload
 POST /webhooks/email              — Mailgun / SendGrid inbound parse
 POST /webhooks/gmail/poll         — poll Gmail "To Invoice" label
-POST /webhooks/gmail/tastingroom/poll  — poll Gmail for tasting room emails
-POST /webhooks/google-chat        — Google Chat HTTP app events
+POST /webhooks/gmail/tastingroom/poll      — poll Gmail for tasting room emails
+POST /webhooks/google-chat                 — Google Chat: invoice cards/wizards
+POST /webhooks/google-chat/tastingroom     — Google Chat: tasting-room approval cards + chat
+POST /webhooks/google-chat/invoice-chat    — Google Chat: invoice chat assistant
 GET  /invoices/recent             — last N invoice logs from Supabase
 GET  /reservations/recent         — last N tasting room reservations
+GET  /activity                    — unified HTML activity page (invoices + reservations)
 GET  /health
 ```
 
@@ -258,13 +280,16 @@ Every agent run opens a `Case` in Supabase `agent_cases`. All LLM calls, tool ca
 fly deploy
 ```
 
-Four processes run on Fly.io:
+Two processes run on Fly.io (see `fly.toml`):
 
 | Process | Command | Purpose |
 |---|---|---|
-| `web` | `uvicorn app.main:app` | FastAPI server (HTTP endpoints, activity page) |
-| `bot` | `python bot.py` | Telegram invoice bot (long polling) |
-| `tastingroom_bot` | `python tastingroom_bot.py` | Telegram tasting room bot (approval callbacks) |
-| `tastingroom_watcher` | `python scripts/tastingroom_mail_watcher.py` | Gmail poller for tasting room emails |
+| `web` | `uvicorn app.main:app` | FastAPI server: HTTP endpoints, all Google Chat webhooks (invoice + tasting-room approvals), activity page |
+| `tastingroom_watcher` | `python scripts/tastingroom_mail_watcher.py` | Gmail poller → Vertex agent → Google Chat cards |
 
-Secrets are set via `fly secrets set KEY=value`. The `tastingroom_bot` requires `TELEGRAM_TASTINGROOM_BOT_TOKEN` (separate from the invoice bot token). All timestamps in the system are stored as UTC in Supabase and converted to Pacific time for display.
+Tasting-room approvals run over Google Chat served by the `web` process — there is no
+separate tasting-room bot process anymore (the Telegram `tastingroom_bot.py` was removed in
+the Vertex migration). For local/self-hosted runs, `supervisord.conf` additionally launches
+the Telegram invoice bot (`bot.py`) so you can use Telegram without a public webhook URL.
+
+Secrets are set via `fly secrets set KEY=value`. All timestamps in the system are stored as UTC in Supabase and converted to Pacific time for display.

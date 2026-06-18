@@ -47,8 +47,9 @@ class NormalizedMessage:
 class Gateway:
     """Dispatches NormalizedMessages to the correct agent graph.
 
-    Currently routes everything to the invoice graph. Future: tastingroom_graph
-    for tasting room intents.
+    Routes everything to the invoice graph. Tasting-room messages do not flow
+    through this gateway — they are ingested out-of-band by the Gmail watcher and
+    handled by the Vertex ADK agent (vertex_agent/intake.py).
     """
 
     def dispatch(self, msg: NormalizedMessage) -> dict:
