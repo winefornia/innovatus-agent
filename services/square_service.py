@@ -315,6 +315,7 @@ def get_invoice(invoice_id: str) -> dict:
         return {
             "invoice_id": getattr(invoice, "id", None),
             "invoice_number": getattr(invoice, "invoice_number", None),
+            "version": getattr(invoice, "version", None),
             "order_id": getattr(invoice, "order_id", None),
             "customer_id": _invoice_customer_id(invoice),
             "title": getattr(invoice, "title", None),

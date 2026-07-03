@@ -34,22 +34,29 @@ def _clear_state():
 # ── case identity ────────────────────────────────────────────────────────────
 
 class TestCaseKey:
-    def test_thread_name_is_the_case(self):
-        assert icm.case_key(thread="spaces/A/threads/T1", space="spaces/A",
-                            user="cecil@winefornia.com") == "spaces/A/threads/T1"
-
-    def test_threadless_dm_falls_back_to_space_and_sender(self):
-        key = icm.case_key(thread="", space="spaces/A", user="Cecil@Winefornia.com")
+    def test_space_plus_sender_is_the_case(self):
+        key = icm.case_key(thread="spaces/A/threads/T1", space="spaces/A",
+                           user="Cecil@Winefornia.com")
         assert key == "spaces/A|cecil@winefornia.com"
 
-    def test_same_thread_same_case_across_senders(self):
-        a = icm.case_key(thread="spaces/A/threads/T1", user="a@x.com")
-        b = icm.case_key(thread="spaces/A/threads/T1", user="b@x.com")
+    def test_flat_space_thread_churn_does_not_change_the_case(self):
+        # Google Chat flat spaces mint a NEW thread.name per message — the case
+        # key must be identical across them (the production amnesia bug).
+        a = icm.case_key(thread="spaces/A/threads/msg1", space="spaces/A", user="c@x.com")
+        b = icm.case_key(thread="spaces/A/threads/msg2", space="spaces/A", user="c@x.com")
         assert a == b
+
+    def test_senders_in_one_space_get_separate_cases(self):
+        a = icm.case_key(space="spaces/A", user="a@x.com")
+        b = icm.case_key(space="spaces/A", user="b@x.com")
+        assert a != b
+
+    def test_space_alone_and_thread_fallbacks(self):
+        assert icm.case_key(space="spaces/A") == "spaces/A"
+        assert icm.case_key(thread="spaces/A/threads/T1") == "spaces/A/threads/T1"
 
     def test_nothing_to_key_on_returns_empty(self):
         assert icm.case_key() == ""
-        assert icm.case_key(space="spaces/A") == ""
         assert icm.case_key(user="a@x.com") == ""
 
 

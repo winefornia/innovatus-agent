@@ -330,9 +330,10 @@ async def _handle_message(ev: dict, decided_by: str) -> dict:
     text = (msg.get("argumentText") or msg.get("text") or "").strip()
     sender_email = ((ev.get("user") or {}).get("email") or "").strip()
 
-    # The Chat thread identifies the CASE this message belongs to (a threadless
-    # DM falls back to space+sender), so follow-ups reach the agent with the
-    # conversation so far instead of as context-free fragments.
+    # The space + sender identifies the CASE this message belongs to (flat
+    # Chat spaces mint a new thread.name per message, so the thread is only a
+    # last-resort key) — follow-ups reach the agent with the conversation so
+    # far instead of as context-free fragments.
     from vertex_agent.invoice_chat_memory import case_key
     case = case_key(
         thread=((msg.get("thread") or {}).get("name") or ""),

@@ -1,10 +1,12 @@
 """Per-case conversation memory for the invoicing chat assistant.
 
-A CASE is one conversation with staff — one Google Chat thread (or, in a
-threadless DM, one space+sender pair). Each chat turn runs a fresh, memory-less
+A CASE is one conversation with staff — one Google Chat space per sender (see
+case_key for why NOT per thread). Each chat turn runs a fresh, memory-less
 agent (see invoice_chat_agent.discuss), so without this store a follow-up like
 "2023, Other tier" arrives with zero context and the agent re-asks for facts the
-staff already gave. The store holds a rolling transcript per case, server-side,
+staff already gave. The case stays live until it goes quiet for _CASE_TTL —
+long enough to carry an order from first paste through clarifications to the
+drafted invoice, and to still be there when staff come back to say "send it". The store holds a rolling transcript per case, server-side,
 exactly like the pending-confirm store in invoice_chat_actions: process-local,
 TTL'd, and bounded.
 
@@ -28,9 +30,12 @@ import time
 from typing import Any
 
 _MAX_CASES = 200
-_MAX_TURNS = 12          # entries (a staff+assistant exchange is 2)
+_MAX_TURNS = 16          # entries (a staff+assistant exchange is 2)
 _ENTRY_MAX_CHARS = 1500
-_CASE_TTL = 6 * 3600     # seconds of silence before a case goes stale
+_CASE_TTL = 48 * 3600    # seconds of silence before a case goes stale — long
+                         # enough that "send Christina's invoice" the next day
+                         # still lands in the same case; final invoice state is
+                         # durable in Square/Supabase regardless
 
 # case key -> {"ts": float, "turns": [{"role": "staff"|"assistant", "text": str}]}
 _cases: "collections.OrderedDict[str, dict[str, Any]]" = collections.OrderedDict()
@@ -40,20 +45,24 @@ _ROLE_LABELS = {"staff": "Staff", "assistant": "You"}
 
 
 def case_key(thread: str = "", space: str = "", user: str = "") -> str:
-    """Identify the case a message belongs to.
+    """Identify the case a message belongs to: SPACE + SENDER.
 
-    The Chat thread name is the case identity — every reply in the same thread
-    lands in the same case. Threadless surfaces (DMs) fall back to space+sender,
-    so one person's DM conversation is still a single case. Returns "" when
-    there is nothing to key on (memory is then skipped entirely).
+    NOT the thread: in Google Chat's default flat ("conversation view") spaces
+    every message arrives with a brand-new thread.name, so keying by thread
+    starts an empty case on each message — exactly the amnesia this store
+    exists to prevent (learned in production). The space is the stable identity
+    of a conversation (the invoicing space / DM), scoped per sender so two
+    staff working in one space don't cross wires. The thread is only a last
+    resort when no space is present. Returns "" when there is nothing to key
+    on (memory is then skipped entirely).
     """
-    thread = (thread or "").strip()
-    if thread:
-        return thread
-    space, user = (space or "").strip(), (user or "").strip().lower()
+    space = (space or "").strip()
+    user = (user or "").strip().lower()
     if space and user:
         return f"{space}|{user}"
-    return ""
+    if space:
+        return space
+    return (thread or "").strip()
 
 
 def record_turn(key: str, role: str, text: str) -> None:
