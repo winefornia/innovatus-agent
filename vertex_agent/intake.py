@@ -29,6 +29,7 @@ def intake_email(*, subject: str, sender: str, body: str, to_email: str = "",
     from db import repository
     from db.models import RawEmailEvent, UnresolvedEvent
     from services.tastingroom_service import (
+        _email_only,
         build_claims,
         classify_email,
         extract_email_facts,
@@ -56,7 +57,10 @@ def intake_email(*, subject: str, sender: str, body: str, to_email: str = "",
     message_type = classify_email(subject, sender, body)
     facts = extract_email_facts(subject, sender, body, message_type)
     facts = merge_llm_facts(facts, llm_extract_email(subject, sender, body, message_type), message_type)
-    facts = {**facts, "message_type": message_type}
+    # sender_email lets the reservation matcher recognize Square notification
+    # emails even when they classify as "unclassified" (wine-order noise must
+    # never attach to tasting cases by name).
+    facts = {**facts, "message_type": message_type, "sender_email": _email_only(sender)}
 
     # 3) resolve or create the reservation
     rid, existing = find_or_create_reservation(
