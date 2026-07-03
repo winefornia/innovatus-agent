@@ -553,6 +553,18 @@ def _parse_json_text(content: Any) -> dict[str, Any]:
     return json.loads(text)
 
 
+_TERMINAL_STATES = {"FINAL_CONFIRMED", "CANCELLED_OR_DEFERRED"}
+_PAYMENT_EXPECTING_STATES = {"INVOICE_SENT", "WAITING_FOR_PAYMENT", "PAYMENT_RECEIVED"}
+_SQUARE_SENDER_SUFFIX = "@messaging.squareup.com"
+
+
+def _is_payment_notification(facts: dict[str, Any]) -> bool:
+    """Square notification emails (invoice created / paid / payment initiated)."""
+    if facts.get("message_type") == "invoice_payment_message":
+        return True
+    return (facts.get("sender_email") or "").lower().endswith(_SQUARE_SENDER_SUFFIX)
+
+
 def find_or_create_reservation(
     *,
     gmail_thread_id: str,
@@ -569,7 +581,7 @@ def find_or_create_reservation(
     if gmail_thread_id:
         existing = find_reservation_by_thread(gmail_thread_id)
         if existing:
-            terminal = existing.get("current_state") in {"FINAL_CONFIRMED", "CANCELLED_OR_DEFERRED"}
+            terminal = existing.get("current_state") in _TERMINAL_STATES
             facility_context = facts.get("message_type") in {
                 "josh_reply",
                 "josh_availability_reply",
@@ -582,6 +594,22 @@ def find_or_create_reservation(
 
     email = facts.get("client_email")
     requested_date = facts.get("requested_date")
+
+    # Square payment notifications NEVER match by name/date context: the same
+    # mailbox receives Square notifications for every Winefornia invoice — WINE
+    # ORDERS included — and name-alone matching invented phantom tasting cases
+    # for wine buyers (Christina Yoo / John Nicastro, June 2026). A payment
+    # email attaches only to a case that shows it is expecting that money
+    # (its recorded deposit invoice number, or a payment-state case with an
+    # invoice on file); otherwise it is left unmatched and the intake guard
+    # quarantines it for human review.
+    if _is_payment_notification(facts):
+        matched = _find_payment_reservation(subject, facts)
+        if matched:
+            return matched["reservation_id"], matched
+        rid = make_reservation_id(facts.get("client_name"), requested_date, facts.get("guest_count"))
+        return rid, None
+
     matches = find_recent_reservations(email, requested_date, limit=2) if (email or requested_date) else []
     if len(matches) == 1:
         return matches[0]["reservation_id"], matches[0]
@@ -597,6 +625,41 @@ def find_or_create_reservation(
     return rid, get_reservation(rid)
 
 
+def _find_payment_reservation(subject: str, facts: dict[str, Any]) -> Optional[dict]:
+    """Which open case, if any, is EXPECTING this Square payment notification?
+
+    Match order:
+      1. the notification's invoice number ("#202447") equals the case's
+         recorded Square deposit-invoice number;
+      2. client identity (email, then name) — but ONLY against a non-terminal
+         case in a payment state that actually has a deposit invoice on file
+         (i.e. one our tasting pipeline sent).
+    Wine-order notifications match neither and return None.
+    """
+    from db.repository import find_recent_reservations
+
+    number_match = re.search(r"#\s*(\d{3,})", subject or "")
+    number = number_match.group(1) if number_match else ""
+    target_name = _name_slug(facts.get("client_name")) if facts.get("client_name") else None
+    email = (facts.get("client_email") or "").strip().lower()
+
+    for row in find_recent_reservations(limit=50):
+        if row.get("current_state") in _TERMINAL_STATES:
+            continue
+        row_number = str(row.get("square_invoice_number") or "").lstrip("#")
+        if number and row_number and row_number == number:
+            return row
+        if row.get("current_state") not in _PAYMENT_EXPECTING_STATES:
+            continue
+        if not (row.get("square_invoice_id") or row_number):
+            continue  # never sent a deposit invoice — cannot be expecting payment
+        if email and (row.get("client_email") or "").strip().lower() == email:
+            return row
+        if target_name and row.get("client_name") and _name_slug(row["client_name"]) == target_name:
+            return row
+    return None
+
+
 def _find_named_reservation(facts: dict[str, Any]) -> Optional[dict]:
     if not facts.get("client_name"):
         return None
@@ -604,6 +667,8 @@ def _find_named_reservation(facts: dict[str, Any]) -> Optional[dict]:
 
     target = _name_slug(facts.get("client_name"))
     for row in find_recent_reservations(limit=50):
+        if row.get("current_state") in _TERMINAL_STATES:
+            continue  # a finished/cancelled case must not swallow a new request
         if row.get("client_name") and _name_slug(row.get("client_name")) == target:
             return row
     return None
