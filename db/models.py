@@ -28,6 +28,10 @@ class InvoiceLog:
     square_order_id: Optional[str] = None
     square_invoice_id: Optional[str] = None
     square_invoice_url: Optional[str] = None
+    square_invoice_number: Optional[str] = None
+    # Square-email validation loop: pending → created_confirmed → paid_confirmed.
+    # The case counts as OPEN until Square's own notification email confirms it.
+    verification_status: str = "pending"
     errors: list[dict] = field(default_factory=list)
 
 
@@ -254,8 +258,11 @@ class WorkflowRecord:
     and operator reconciliation.
 
     Terminal statuses:
-      completed_draft_saved           — Square draft created, kept as draft
-      completed_sent                  — Square invoice published and sent to client
+      pending_verification            — invoice created; case stays OPEN until
+                                        Square's own notification email confirms it
+      completed_draft_saved           — Square draft created and email-verified
+      completed_sent                  — Square invoice published and email-verified
+      completed_paid                  — Square confirmed the client paid
       completed_reservation_approved  — tasting room booking confirmed
       completed_reservation_declined  — reservation declined or cancelled
       cancelled                       — user rejected or bot declined to proceed

@@ -1145,6 +1145,7 @@ def _build_invoice_log(state, customer, email, full_name, order_id, invoice_resu
         payment_schedule=state.get("payment_schedule"),
         payment_methods=state.get("payment_methods", []),
         approval="approved",
+        square_invoice_number=str(invoice_result.get("invoice_number") or "") or None,
         square_order_id=order_id,
         square_invoice_id=invoice_result["invoice_id"],
     )

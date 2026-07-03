@@ -10,6 +10,7 @@ Endpoints:
   POST /webhooks/google-chat/invoice-chat — invoicing chat assistant
   POST /webhooks/google-chat/tastingroom  — tasting-room assistant
   POST /webhooks/gmail/tastingroom/poll   — poll Gmail for reservation emails
+  POST /webhooks/gmail/invoice-validation/poll — confirm invoice cases from Square mail
   GET  /invoices/recent         — recent invoice log
   GET  /reservations/recent     — recent reservation cases
   GET  /activity                — operator activity page
@@ -70,6 +71,20 @@ def gmail_tastingroom_poll():
     except Exception as e:
         return {"error": f"Gmail not configured: {e}"}
     return poll_once(max_results=10)
+
+
+@app.post("/webhooks/gmail/invoice-validation/poll")
+def gmail_invoice_validation_poll():
+    """Consume Square notification mail to confirm invoice cases (validation loop).
+
+    An invoice case stays pending_verification until Square's own "invoice was
+    created/paid" email confirms the process worked. The watcher runs this every
+    cycle; this endpoint triggers it on demand."""
+    try:
+        from services.invoice_mail_validator import poll_once
+    except Exception as e:
+        return {"error": f"Gmail not configured: {e}"}
+    return poll_once(max_results=20)
 
 # ---------------------------------------------------------------------------
 # Recent invoices / Health
