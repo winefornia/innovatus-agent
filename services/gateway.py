@@ -191,8 +191,11 @@ def _derive_terminal_status(result: dict) -> str:
     if approval == "rejected":
         return "cancelled"
     if result.get("square_invoice_id"):
-        send = result.get("send_decision", "draft")
-        return "completed_sent" if send == "send" else "completed_draft_saved"
+        # The Square API said yes, but the case stays OPEN until Square's own
+        # notification email confirms the invoice really exists — the invoice
+        # mail validator (services/invoice_mail_validator.py) flips this to
+        # completed_draft_saved / completed_sent / completed_paid.
+        return "pending_verification"
     if result.get("error"):
         return "failed_safely"
     return "needs_manual_review"

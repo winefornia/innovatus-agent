@@ -341,15 +341,13 @@ class TestSquarePartialFailure:
 # ---------------------------------------------------------------------------
 
 class TestTerminalStatusDerivation:
-    def test_draft_saved_status(self):
+    def test_invoice_creation_is_pending_until_square_email_verifies(self):
+        # Draft or sent, the case stays OPEN until the Square notification email
+        # confirms it (services/invoice_mail_validator.py closes it).
         from services.gateway import _derive_terminal_status
-        result = {"square_invoice_id": "inv_1", "send_decision": "draft"}
-        assert _derive_terminal_status(result) == "completed_draft_saved"
-
-    def test_sent_status(self):
-        from services.gateway import _derive_terminal_status
-        result = {"square_invoice_id": "inv_1", "send_decision": "send"}
-        assert _derive_terminal_status(result) == "completed_sent"
+        for result in ({"square_invoice_id": "inv_1", "send_decision": "draft"},
+                       {"square_invoice_id": "inv_1", "send_decision": "send"}):
+            assert _derive_terminal_status(result) == "pending_verification"
 
     def test_cancelled_status(self):
         from services.gateway import _derive_terminal_status

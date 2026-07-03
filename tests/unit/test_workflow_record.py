@@ -9,18 +9,13 @@ from db.models import WorkflowRecord
 class TestDeriveTerminalStatus:
     """_derive_terminal_status maps invoice_graph result dicts to terminal statuses."""
 
-    def test_sent(self):
-        result = {"square_invoice_id": "inv_1", "send_decision": "send"}
-        assert _derive_terminal_status(result) == "completed_sent"
-
-    def test_draft_saved(self):
-        result = {"square_invoice_id": "inv_1", "send_decision": "draft"}
-        assert _derive_terminal_status(result) == "completed_draft_saved"
-
-    def test_draft_saved_missing_send_decision(self):
-        """send_decision defaults to 'draft' when absent."""
-        result = {"square_invoice_id": "inv_1"}
-        assert _derive_terminal_status(result) == "completed_draft_saved"
+    def test_invoice_created_stays_open_until_square_email_confirms(self):
+        # The Square API said yes, but the case is only CLOSED when Square's own
+        # notification email confirms it (services/invoice_mail_validator.py).
+        for result in ({"square_invoice_id": "inv_1", "send_decision": "send"},
+                       {"square_invoice_id": "inv_1", "send_decision": "draft"},
+                       {"square_invoice_id": "inv_1"}):
+            assert _derive_terminal_status(result) == "pending_verification"
 
     def test_cancelled_on_rejection(self):
         result = {"approval": "rejected"}

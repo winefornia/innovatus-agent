@@ -55,6 +55,8 @@ def _to_row(record: InvoiceLog) -> dict:
         "square_order_id": record.square_order_id,
         "square_invoice_id": record.square_invoice_id,
         "square_invoice_url": record.square_invoice_url,
+        "square_invoice_number": record.square_invoice_number,
+        "verification_status": record.verification_status or "pending",
         "errors": record.errors or [],
     }
 
@@ -106,8 +108,71 @@ def get_invoice_log(thread_id: str) -> Optional[InvoiceLog]:
         square_order_id=row.get("square_order_id"),
         square_invoice_id=row.get("square_invoice_id"),
         square_invoice_url=row.get("square_invoice_url"),
+        square_invoice_number=row.get("square_invoice_number"),
+        verification_status=row.get("verification_status") or "pending",
         errors=row.get("errors") or [],
     )
+
+
+def find_invoice_log_by_number(square_invoice_number: str) -> Optional[dict]:
+    """Fetch the invoice log row for a Square invoice number ("202468")."""
+    number = str(square_invoice_number or "").lstrip("#").strip()
+    if not number:
+        return None
+    client = _get_client()
+    result = (
+        client.table("invoice_logs")
+        .select("*")
+        .eq("square_invoice_number", number)
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    rows = result.data or []
+    return rows[0] if rows else None
+
+
+def list_unverified_invoices(limit: int = 25) -> list[dict]:
+    """Invoice logs still awaiting Square-email confirmation (open cases)."""
+    client = _get_client()
+    result = (
+        client.table("invoice_logs")
+        .select("thread_id, customer_name, square_invoice_id, square_invoice_number, verification_status, created_at")
+        .in_("verification_status", ["pending", "created_confirmed"])
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return result.data or []
+
+
+def mark_invoice_verification(thread_id: str, *, status: str, stamp_field: str) -> None:
+    """Record a Square-email confirmation on an invoice log (by thread_id)."""
+    from datetime import datetime, timezone
+
+    client = _get_client()
+    client.table("invoice_logs").update({
+        "verification_status": status,
+        stamp_field: datetime.now(timezone.utc).isoformat(),
+    }).eq("thread_id", thread_id).execute()
+
+
+def set_invoice_number(thread_id: str, square_invoice_number: str) -> None:
+    """Backfill the Square invoice number on an invoice log (by thread_id)."""
+    client = _get_client()
+    client.table("invoice_logs").update({
+        "square_invoice_number": str(square_invoice_number or "").lstrip("#").strip(),
+    }).eq("thread_id", thread_id).execute()
+
+
+def update_workflow_record_status(external_id: str, status: str, summary: str = "") -> None:
+    """Move a workflow record (matched by its Square invoice id) to a new status —
+    used by the invoice mail validator to close pending_verification cases."""
+    client = _get_client()
+    patch: dict = {"status": status}
+    if summary:
+        patch["summary"] = summary[:200]
+    client.table("workflow_records").update(patch).eq("external_id", external_id).execute()
 
 
 def list_recent_invoices(limit: int = 20) -> list[dict]:
@@ -115,7 +180,7 @@ def list_recent_invoices(limit: int = 20) -> list[dict]:
     client = _get_client()
     result = (
         client.table("invoice_logs")
-        .select("thread_id, customer_name, tier_name, total_before_tax_cents, approval, square_invoice_id, created_at")
+        .select("thread_id, customer_name, tier_name, total_before_tax_cents, approval, square_invoice_id, square_invoice_number, verification_status, created_at")
         .order("created_at", desc=True)
         .limit(limit)
         .execute()

@@ -71,6 +71,21 @@ def main() -> None:
             logging.error("Tastingroom watcher poll hung — %s; skipping to next cycle", exc)
         except Exception as exc:
             logging.exception("Tastingroom watcher poll failed: %s", exc)
+
+        # Invoice validation loop — consumes the Square notification mail the
+        # tasting intake rejects, confirming invoice cases actually reached
+        # Square (and got paid). Same mailbox, fully separate pipeline.
+        try:
+            with _deadline(_WATCHDOG_SECONDS):
+                from services.invoice_mail_validator import poll_once as validate_invoices
+                v = validate_invoices(max_results=20)
+            confirmed = [i for i in v.get("processed", []) if i.get("result") not in {"ignored"}]
+            if confirmed:
+                logging.info("Invoice mail validator processed: %s", confirmed)
+        except _WatchdogTimeout as exc:
+            logging.error("Invoice validator poll hung — %s; skipping to next cycle", exc)
+        except Exception as exc:
+            logging.exception("Invoice validator poll failed: %s", exc)
         polls += 1
         # Liveness: stamp a heartbeat each poll so the web app's monitor can tell
         # the watcher is alive (and alert if it goes silent). Best-effort.

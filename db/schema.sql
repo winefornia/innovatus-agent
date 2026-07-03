@@ -177,12 +177,20 @@ create table if not exists invoice_logs (
     square_order_id         text,
     square_invoice_id       text,
     square_invoice_url      text,
+    square_invoice_number   text,               -- Square's human number (#202468) — matches notification emails
+    -- Validation loop: Square's own notification emails confirm the process
+    -- actually worked. 'pending' = case open awaiting confirmation;
+    -- 'created_confirmed' / 'paid_confirmed' = verified; 'legacy' = predates loop.
+    verification_status     text not null default 'pending',
+    verified_created_at     timestamptz,
+    verified_paid_at        timestamptz,
     errors                  jsonb,
     created_at              timestamptz not null default now(),
     updated_at              timestamptz not null default now()
 );
 
 create index if not exists invoice_logs_thread_id_idx    on invoice_logs (thread_id);
+create index if not exists invoice_logs_square_invoice_number_idx on invoice_logs (square_invoice_number);
 create index if not exists invoice_logs_customer_name_idx on invoice_logs (customer_name);
 create index if not exists invoice_logs_created_at_idx   on invoice_logs (created_at desc);
 

@@ -364,6 +364,7 @@ def recent_invoices(limit: int = 10) -> list[dict]:
     for r in rows:
         out.append({
             "customer": r.get("customer_name"),
+            "verification": r.get("verification_status"),
             "tier": r.get("tier_name"),
             "total": _money(r.get("total_before_tax_cents")),
             "status": r.get("approval"),
@@ -927,6 +928,7 @@ def _log_invoice_best_effort(customer_name, customer_email, tier, line_items, qu
             payment_methods=draft.get("accepted_payment_methods") or [],
             approval="approved" if send else None,
             square_invoice_id=draft.get("invoice_id"),
+            square_invoice_number=str(draft.get("invoice_number") or "") or None,
         ))
     except Exception as exc:  # pragma: no cover - observability only
         log.info("[inv:chat-actions] invoice log skipped: %s", exc)
