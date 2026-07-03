@@ -2,13 +2,13 @@
 
 Invoice agent for Winefornia / Innovatus Wine, built with LangGraph + Claude API.
 
-Cecil or Audrey sends a raw order (Telegram message, forwarded email, PDF) and the agent extracts the details, looks up the customer, calculates the invoice, asks for approval, and creates a draft in Square. The invoice is **never sent to the client** without an explicit confirmation tap.
+Cecil or Audrey sends a raw order (Google Chat message, forwarded email, PDF) and the agent extracts the details, looks up the customer, calculates the invoice, asks for approval, and creates a draft in Square. The invoice is **never sent to the client** without an explicit confirmation tap.
 
 ## Architecture
 
 ```
 Cecil / Audrey
-  ↓  (Telegram bot or Google Chat)
+  ↓  (Google Chat)
 Gateway  (services/gateway.py)  ← channel normalization
   ├── Guardrail  (services/guardrail_service.py)  ← pre/post checks
   ├── Control Layer  (services/control_layer.py)  ← case lifecycle + tracing
@@ -68,12 +68,8 @@ Max 2 edit rounds per invoice. After that Cecil must resubmit the full order.
 
 | Channel | Entry point | Thread ID scheme |
 |---|---|---|
-| Telegram | `bot.py` (long polling) | `tg_{chat_id}` |
-| Google Chat | `app/adapters/google_chat_adapter.py` → `services/gateway.py` | `gc_{space_id}` |
-| Email / Mailgun / SendGrid | `POST /webhooks/email` | `email_{uuid}` |
-| Gmail labeled "To Invoice" | `POST /webhooks/gmail/poll` | `gmail_{message_id}` |
-| HTTP API / Zapier / n8n | `POST /intake` | caller-supplied or auto-generated |
-| PDF upload | `POST /intake/pdf` | caller-supplied or auto-generated |
+| Google Chat (invoice wizard) | `app/adapters/google_chat_adapter.py` → `services/gateway.py` | `gc_{space_id}` |
+| Google Chat (invoicing assistant) | `app/adapters/google_chat_invoice_chat.py` | per Chat thread |
 
 All channels normalize to `NormalizedMessage` before reaching the invoice graph. Adding a new channel requires zero changes to business logic.
 
@@ -103,7 +99,7 @@ Claude-powered coordination proposes the next best reservation action, but outbo
 winefornia-agent/
   app/
     config.py               # env vars
-    main.py                 # FastAPI: /intake, /intake/pdf, /webhooks/*
+    main.py                 # FastAPI: /webhooks/google-chat*, /webhooks/gmail/tastingroom/poll
     adapters/
       google_chat_adapter.py  # Google Chat event handler
     data/
@@ -141,7 +137,6 @@ winefornia-agent/
   scripts/
     google_auth.py          # generate Gmail OAuth token.json
     tastingroom_*.py        # tasting room smoke tests and utilities
-  bot.py                    # Telegram invoice bot (long polling, primary interface)
   requirements.txt
   fly.toml                  # Fly.io deployment (web + tastingroom watcher)
   .env.example
@@ -157,10 +152,7 @@ pip install -r requirements.txt
 cp .env.example .env
 # Fill in required vars (see table below)
 
-# Run the Telegram invoice bot
-python bot.py
-
-# Or start the API server
+# Start the API server (serves the Google Chat webhooks)
 uvicorn app.main:app --reload
 ```
 
@@ -174,11 +166,6 @@ uvicorn app.main:app --reload
 | `SQUARE_ACCESS_TOKEN` | dev only | developer.squareup.com → Sandbox |
 | `SQUARE_LOCATION_ID` | dev only | Square dashboard → Sandbox Locations |
 | `SQUARE_ENVIRONMENT` | dev only | `sandbox` or `production` (default: sandbox) |
-| `TELEGRAM_BOT_TOKEN` | yes (bot) | @BotFather on Telegram |
-| `TELEGRAM_TASTINGROOM_BOT_TOKEN` | yes (tasting) | @BotFather on Telegram |
-| `TELEGRAM_APPROVAL_CHAT_ID` | yes (tasting) | Telegram chat ID for approval messages |
-| `TELEGRAM_TASTINGROOM_AUTHORIZED_CHAT_IDS` | optional | comma-separated Telegram chat IDs; defaults to `TELEGRAM_APPROVAL_CHAT_ID` |
-| `TELEGRAM_TASTINGROOM_AUTHORIZED_USER_IDS` | optional | comma-separated Telegram user IDs allowed to use tasting bot |
 | `SUPABASE_URL` | yes | Supabase dashboard → Settings → API |
 | `SUPABASE_SERVICE_KEY` | yes | Supabase dashboard → Settings → API → service_role |
 | `POSTGRES_CONNECTION_STRING` | yes | Supabase dashboard → Settings → Database (port 6543) |
@@ -193,10 +180,6 @@ uvicorn app.main:app --reload
 ## API endpoints
 
 ```
-POST /intake                      — text intake (email forward, Zapier, n8n)
-POST /intake/pdf                  — direct PDF upload
-POST /webhooks/email              — Mailgun / SendGrid inbound parse
-POST /webhooks/gmail/poll         — poll Gmail "To Invoice" label
 POST /webhooks/gmail/tastingroom/poll  — poll Gmail for tasting room emails
 POST /webhooks/google-chat        — Google Chat HTTP app events
 GET  /invoices/recent             — last N invoice logs from Supabase

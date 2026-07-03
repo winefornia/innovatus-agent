@@ -1,17 +1,17 @@
 """
 Gateway — channel normalization layer.
 
-All inbound messages (Telegram, FastAPI /intake, Gmail) are normalized into a
-NormalizedMessage before reaching invoice logic. This means adding a new channel
-(Google Chat, web dashboard, etc.) requires zero changes to the invoice agent.
+Inbound Google Chat messages are normalized into a NormalizedMessage before
+reaching invoice logic, so adding a channel later requires zero changes to the
+invoice agent.
 
 Usage:
     from services.gateway import gateway, NormalizedMessage
 
     msg = NormalizedMessage(
-        user_id="tg_12345678",
-        channel="telegram",
-        session_id="tg_12345678",
+        user_id="gc_cecil@winefornia.com",
+        channel="google_chat",
+        session_id="gc_spaces_AAA",
         text="Invoice Oak Barrel for 3 cases Cab",
         raw={},
         attachments=[],
@@ -23,7 +23,6 @@ Usage:
 from __future__ import annotations
 
 import logging
-import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -31,8 +30,8 @@ from typing import Any
 
 @dataclass
 class NormalizedMessage:
-    user_id: str        # e.g. "tg_12345678", "api_<uuid>", "gmail_<message_id>"
-    channel: str        # "telegram" | "google_chat" | "api" | "gmail" | "pdf"
+    user_id: str        # e.g. "gc_cecil@winefornia.com"
+    channel: str        # "google_chat"
     session_id: str     # LangGraph thread_id key for this conversation
     text: str           # normalized message text
     raw: dict           # original platform event (for debugging)
@@ -47,7 +46,7 @@ class NormalizedMessage:
 class Gateway:
     """Dispatches NormalizedMessages to the correct agent graph.
 
-    Currently routes normalized chat/email intake through the invoice graph.
+    Currently routes normalized Google Chat intake through the invoice graph.
     Tasting-room reservations enter through the Gmail watcher and Google Chat
     approval path instead of this gateway.
     """
@@ -197,45 +196,3 @@ def _derive_terminal_status(result: dict) -> str:
     if result.get("error"):
         return "failed_safely"
     return "needs_manual_review"
-
-
-# ---------------------------------------------------------------------------
-# Channel-specific NormalizedMessage factories
-# ---------------------------------------------------------------------------
-
-def from_telegram(chat_id: int, text: str) -> NormalizedMessage:
-    return NormalizedMessage(
-        user_id=f"tg_{chat_id}",
-        channel="telegram",
-        session_id=f"tg_{chat_id}",
-        text=text,
-        raw={"chat_id": chat_id},
-        attachments=[],
-    )
-
-
-def from_api(message: str, sender_id: str = "api", thread_id: str | None = None) -> NormalizedMessage:
-    sid = thread_id or f"intake_{uuid.uuid4().hex[:8]}"
-    return NormalizedMessage(
-        user_id=f"api_{sender_id}",
-        channel="api",
-        session_id=sid,
-        text=message,
-        raw={"sender_id": sender_id},
-        attachments=[],
-        sender_id=sender_id,
-    )
-
-
-def from_pdf(extracted_text: str, sender_id: str = "pdf_upload",
-             thread_id: str | None = None) -> NormalizedMessage:
-    sid = thread_id or f"pdf_{uuid.uuid4().hex[:8]}"
-    return NormalizedMessage(
-        user_id=f"api_{sender_id}",
-        channel="pdf",
-        session_id=sid,
-        text=extracted_text,
-        raw={"sender_id": sender_id},
-        attachments=[],
-        sender_id=sender_id,
-    )

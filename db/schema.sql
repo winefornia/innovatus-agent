@@ -289,6 +289,16 @@ create table if not exists reservations (
     current_state           text not null default 'REQUEST_RECEIVED',
     payment_status          text not null default 'not_sent',
     booking_status          text not null default 'not_booked',
+    square_customer_id      text,
+    square_order_id         text,
+    square_invoice_id       text,
+    square_invoice_number   text,
+    square_invoice_url      text,
+    square_invoice_total_cents integer,
+    square_invoice_status   text,
+    square_invoice_verified_at timestamptz,
+    calendar_event_id       text,
+    calendar_event_url      text,
     gmail_thread_ids        text[] not null default '{}',
     active_slot             jsonb not null default '{}'::jsonb,
     candidate_slots         jsonb not null default '[]'::jsonb,
@@ -308,6 +318,17 @@ create or replace trigger reservations_updated_at
     before update on reservations
     for each row execute function update_updated_at();
 
+alter table reservations add column if not exists square_customer_id text;
+alter table reservations add column if not exists square_order_id text;
+alter table reservations add column if not exists square_invoice_id text;
+alter table reservations add column if not exists square_invoice_number text;
+alter table reservations add column if not exists square_invoice_url text;
+alter table reservations add column if not exists square_invoice_total_cents integer;
+alter table reservations add column if not exists square_invoice_status text;
+alter table reservations add column if not exists square_invoice_verified_at timestamptz;
+alter table reservations add column if not exists calendar_event_id text;
+alter table reservations add column if not exists calendar_event_url text;
+
 
 create table if not exists availability_claims (
     id                    uuid primary key default gen_random_uuid(),
@@ -322,7 +343,7 @@ create table if not exists availability_claims (
     time_description       text,
     guest_count            integer,
     experience_type        text,
-    source_channel         text not null,             -- email | telegram | manual
+    source_channel         text not null,             -- email | google_chat | manual
     source_message_id      text,
     raw_text               text,
     confidence             numeric default 1.0,
@@ -364,8 +385,6 @@ create table if not exists reservation_action_requests (
     email_subject          text,
     email_body             text,
     recommendation         text,
-    telegram_chat_id       text,
-    telegram_message_id    text,
     source_message_id      text,
     decided_by             text,
     decided_at             timestamptz,

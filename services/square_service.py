@@ -4,9 +4,10 @@ All Square API calls go here. The agent graph calls these functions,
 never the Square SDK directly.
 """
 import hashlib
+import time
 import uuid
 from datetime import date, timedelta
-from typing import Optional
+from typing import Any, Optional
 
 
 def _ikey(case_id: str, action: str) -> str:
@@ -133,9 +134,15 @@ def create_order(
         unit_type = item.get("unit_type", "bottle")
         bottles_per_case = item.get("bottles_per_case", 12)
 
-        if unit_type == "case":
+        if item.get("display_name"):
+            total_bottles = int(qty)
+            display_name = item["display_name"]
+        elif unit_type == "case":
             total_bottles = int(qty * bottles_per_case)
             display_name = f"{item['product_name']} ({int(qty)} case{'s' if qty > 1 else ''} / {total_bottles} bottles)"
+        elif unit_type == "guest":
+            total_bottles = int(qty)
+            display_name = f"{item['product_name']} ({int(qty)} guest{'s' if qty > 1 else ''})"
         else:
             total_bottles = int(qty)
             display_name = f"{item['product_name']} ({int(qty)} bottle{'s' if qty > 1 else ''})"
@@ -163,7 +170,10 @@ def create_order(
         response = client.orders.create(
             order={
                 "location_id": loc,
-                "reference_id": f"winefornia-{uuid.uuid4().hex[:8]}",
+                "reference_id": (
+                    f"winefornia-{hashlib.sha256(idempotency_key.encode()).hexdigest()[:8]}"
+                    if idempotency_key else f"winefornia-{uuid.uuid4().hex[:8]}"
+                ),
                 "line_items": sq_line_items,
             },
             idempotency_key=idempotency_key or str(uuid.uuid4()),
@@ -274,6 +284,91 @@ def publish_invoice(invoice_id: str, invoice_version: int = 0, idempotency_key: 
         }
     except Exception as e:
         return {"error": str(e)}
+
+
+def _invoice_total_cents(invoice: Any) -> int | None:
+    for request in getattr(invoice, "payment_requests", None) or []:
+        money = getattr(request, "computed_amount_money", None)
+        if money and getattr(money, "amount", None) is not None:
+            return money.amount
+        money = getattr(request, "total_completed_amount_money", None)
+        if money and getattr(money, "amount", None) is not None:
+            return money.amount
+    return None
+
+
+def _invoice_customer_id(invoice: Any) -> str:
+    recipient = getattr(invoice, "primary_recipient", None)
+    return getattr(recipient, "customer_id", None) or ""
+
+
+def get_invoice(invoice_id: str) -> dict:
+    """Fetch one Square invoice by id and normalize the fields we verify/store."""
+    client = _get_client()
+    if not client:
+        return {"error": "Square not configured. Set SQUARE_PROD_ACCESS_TOKEN in .env"}
+    try:
+        response = client.invoices.get(invoice_id)
+        invoice = response.invoice
+        if not invoice:
+            return {"error": f"Square returned no invoice for {invoice_id}"}
+        return {
+            "invoice_id": getattr(invoice, "id", None),
+            "invoice_number": getattr(invoice, "invoice_number", None),
+            "order_id": getattr(invoice, "order_id", None),
+            "customer_id": _invoice_customer_id(invoice),
+            "title": getattr(invoice, "title", None),
+            "status": getattr(invoice, "status", None),
+            "delivery_method": getattr(invoice, "delivery_method", None),
+            "public_url": getattr(invoice, "public_url", None),
+            "total_money_cents": _invoice_total_cents(invoice),
+            "created_at": getattr(invoice, "created_at", None),
+            "updated_at": getattr(invoice, "updated_at", None),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def verify_invoice(
+    invoice_id: str,
+    *,
+    expected_order_id: str = "",
+    expected_customer_id: str = "",
+    title_contains: str = "",
+    require_public_url: bool = True,
+    attempts: int = 3,
+    sleep_seconds: float = 0.75,
+) -> dict:
+    """Fetch an invoice back from Square and validate it is the intended invoice.
+
+    This is the runtime proof that the action reached Square, not just that our
+    publish call returned something. Retries cover Square's short propagation
+    window immediately after publish.
+    """
+    last: dict = {}
+    published_statuses = {"UNPAID", "SCHEDULED", "PARTIALLY_PAID", "PAID"}
+    for i in range(max(1, attempts)):
+        inv = get_invoice(invoice_id)
+        last = inv
+        if not inv.get("error"):
+            problems = []
+            status = inv.get("status") or ""
+            if status not in published_statuses:
+                problems.append(f"status is {status or 'missing'}")
+            if require_public_url and not inv.get("public_url"):
+                problems.append("public URL missing")
+            if expected_order_id and inv.get("order_id") != expected_order_id:
+                problems.append(f"order mismatch: {inv.get('order_id')} != {expected_order_id}")
+            if expected_customer_id and inv.get("customer_id") != expected_customer_id:
+                problems.append(f"customer mismatch: {inv.get('customer_id')} != {expected_customer_id}")
+            if title_contains and title_contains.lower() not in (inv.get("title") or "").lower():
+                problems.append(f"title does not include {title_contains!r}")
+            if not problems:
+                return {"ok": True, **inv}
+            last = {"ok": False, **inv, "error": "; ".join(problems)}
+        if i < attempts - 1:
+            time.sleep(sleep_seconds)
+    return {"ok": False, **last, "error": last.get("error") or "invoice verification failed"}
 
 
 def get_customer_by_name(name: str) -> Optional[dict]:

@@ -38,7 +38,7 @@ Flow:
     ↓
   respond
 
-Interrupts surface in Telegram (bot.py) and Google Chat (google_chat_adapter.py)
+Interrupts surface in Google Chat (google_chat_adapter.py)
 as inline keyboards. All interrupts are guarded against stale callbacks via
 which() + _VALID_AT.
 

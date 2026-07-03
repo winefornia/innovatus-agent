@@ -4,13 +4,11 @@ The shipping fee is a human-confirmed value that must survive the whole
 pipeline: the confirm_shipping_fee interrupt fires after pricing, the reply is
 parsed into shipping_cents, the preview/approval totals include it, and the
 Square order carries it as an explicit "Shipping" line item. These tests pin
-each hop plus the adapter-facing plumbing (interrupt detection, the dashboard
-resume endpoint) so a change to any one layer can't silently orphan the fee.
+each hop plus the adapter-facing interrupt detection so a change to any one
+layer can't silently orphan the fee.
 """
 
 from unittest.mock import MagicMock
-
-import pytest
 
 import agents.invoice_graph as ig
 from services.invoice_interrupts import (
@@ -190,35 +188,3 @@ class TestInterruptDetection:
         state = {"pricing_result": {"x": 1}, "shipping_cents": 3000,
                  "invoice_preview": {"y": 1}}
         assert current_invoice_interrupt(state) == "approval"
-
-
-# ── dashboard resume endpoint ────────────────────────────────────────────────
-
-class TestDashboardEndpoints:
-    @pytest.fixture()
-    def client(self):
-        from fastapi.testclient import TestClient
-        from app.main import app
-        return TestClient(app)
-
-    def test_resume_with_nothing_pending_is_409(self, client):
-        r = client.post("/agents/invoice/resume",
-                        json={"thread_id": "web_nonexistent", "decision": "free"})
-        assert r.status_code == 409
-        assert "Nothing is waiting" in r.json()["final_response"]
-
-    def test_dashboard_served_at_root(self, client):
-        r = client.get("/")
-        assert r.status_code == 200
-        assert "/agents/invoice/run" in r.text
-
-    def test_jsonable_graph_result_normalizes_interrupts(self):
-        from app.main import _jsonable_graph_result
-
-        class FakeInterrupt:
-            value = {"type": "shipping_fee_confirmation", "question": "Shipping?"}
-
-        out = _jsonable_graph_result({"a": 1, "__interrupt__": [FakeInterrupt()]})
-        assert out["a"] == 1
-        assert out["__interrupt__"] == [{"value": {"type": "shipping_fee_confirmation",
-                                                   "question": "Shipping?"}}]

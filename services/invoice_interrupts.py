@@ -1,6 +1,6 @@
 """Shared invoice graph interrupt detection.
 
-UI adapters (Telegram, Google Chat) use this to decide whether the graph is
+UI adapters (Google Chat) use this to decide whether the graph is
 waiting for human input and which checkpoint it's at.
 
 The reliable signal is the ACTUAL interrupt payload emitted by interrupt({...})

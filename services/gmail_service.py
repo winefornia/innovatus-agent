@@ -1,4 +1,4 @@
-"""Gmail service — intake reading + receipt email sending.
+"""Gmail service — mailbox reading (tasting room) + receipt email sending.
 
 Auth (two modes, checked in order):
   1. Service account + domain-wide delegation (preferred for production):
@@ -28,9 +28,6 @@ from app.config import ANTHROPIC_API_KEY
 
 _PROJECT_ROOT = Path(__file__).parent.parent
 _TOKEN_FILE = _PROJECT_ROOT / "token.json"
-_INTAKE_LABEL = os.getenv("GMAIL_INTAKE_LABEL", "To Invoice")
-_PROCESSED_LABEL = os.getenv("GMAIL_PROCESSED_LABEL", "Invoice Processed")
-_FORWARDING_QUERY = os.getenv("GMAIL_FORWARDING_QUERY", 'subject:"To Invoice"')
 _GOOGLE_ACCOUNT_EMAIL = os.getenv("GOOGLE_ACCOUNT_EMAIL", "").strip().lower()
 
 SCOPES = [
@@ -228,11 +225,6 @@ def _decode_body(payload: dict) -> str:
     return ""
 
 
-def list_intake_emails(max_results: int = 10) -> dict:
-    """List emails tagged 'To Invoice' or matching the forwarding query."""
-    return list_emails(label_name=_INTAKE_LABEL, query=_FORWARDING_QUERY, max_results=max_results)
-
-
 def list_emails(label_name: str = "", query: str = "", max_results: int = 10) -> dict:
     """List emails by Gmail label and/or search query."""
     service = _get_service()
@@ -366,11 +358,6 @@ def read_email(message_id: str) -> dict:
         "date": headers.get("Date", ""),
         "body": body,
     }
-
-
-def mark_processed(message_id: str) -> dict:
-    """Move a message from 'To Invoice' → 'Invoice Processed'."""
-    return move_message_label(message_id, remove_label=_INTAKE_LABEL, add_label=_PROCESSED_LABEL)
 
 
 def apply_message_labels(

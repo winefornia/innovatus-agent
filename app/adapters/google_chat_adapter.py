@@ -1,9 +1,9 @@
 """
 Google Chat adapter for Winefornia Invoice Agent.
 
-Mirrors bot.py (Telegram) but speaks Google Chat's event/response format.
+The Google Chat front-end for the deterministic invoice wizard.
 Google Chat is the UI surface only — the invoice graph, DB, and all
-business logic are identical to the Telegram path.
+business logic live in the shared gateway/graph path.
 
 Event flow:
   POST /webhooks/google-chat
@@ -774,7 +774,7 @@ async def _handle_message(event: dict, space_id: str, thread_id: str, config: di
     await asyncio.to_thread(_reset_thread, thread_id)
 
     # Start fresh through the gateway so guardrails, control-layer traces, and
-    # workflow records match the Telegram/API paths.
+    # workflow records match the API paths.
     log.info("[gc:message] new run space=%s text=%r", space_id, text[:80])
     try:
         result = await asyncio.to_thread(

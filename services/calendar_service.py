@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import hashlib
 from datetime import datetime, timedelta
 
 log = logging.getLogger(__name__)
@@ -54,9 +55,11 @@ def _parse_start(date_str: str | None, time_str: str | None) -> datetime | None:
 
 def create_tasting_event(*, reservation_id: str, summary: str, date_str: str | None,
                          time_str: str | None, attendees: list[str],
-                         description: str = "", location: str = "") -> str | None:
-    """Create the visit event and invite attendees (sendUpdates='all'). Returns the
-    event link, or None on any failure. Never raises."""
+                         description: str = "", location: str = "") -> dict | None:
+    """Create the visit event and invite attendees (sendUpdates='all').
+
+    Returns event metadata, or None on any failure. Never raises.
+    """
     svc = _calendar_service()
     if not svc:
         return None
@@ -67,7 +70,9 @@ def create_tasting_event(*, reservation_id: str, summary: str, date_str: str | N
         return None
     end = start + timedelta(minutes=_DURATION_MIN)
     clean = [e for e in dict.fromkeys(a.strip() for a in attendees if a and "@" in a)]
+    event_id = "tr" + hashlib.sha256(str(reservation_id).encode()).hexdigest()[:24]
     body = {
+        "id": event_id,
         "summary": summary,
         "description": description,
         "location": location,
@@ -79,7 +84,23 @@ def create_tasting_event(*, reservation_id: str, summary: str, date_str: str | N
         ev = svc.events().insert(calendarId="primary", body=body, sendUpdates="all").execute()
         log.info("[calendar] created event for %s with %d attendees → %s",
                  reservation_id, len(clean), ev.get("htmlLink"))
-        return ev.get("htmlLink")
+        return {
+            "event_id": ev.get("id") or event_id,
+            "html_link": ev.get("htmlLink"),
+            "attendees": clean,
+        }
     except Exception as e:
+        if "409" in str(e):
+            try:
+                ev = svc.events().get(calendarId="primary", eventId=event_id).execute()
+                log.info("[calendar] reused existing event for %s → %s",
+                         reservation_id, ev.get("htmlLink"))
+                return {
+                    "event_id": ev.get("id") or event_id,
+                    "html_link": ev.get("htmlLink"),
+                    "attendees": clean,
+                }
+            except Exception:
+                pass
         log.error("[calendar] event create failed for %s: %s", reservation_id, e)
         return None

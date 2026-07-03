@@ -10,8 +10,6 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-os.environ.setdefault("TELEGRAM_APPROVAL_CHAT_ID", "")
-
 from db.models import Reservation
 from services.tastingroom_service import (
     classify_email,

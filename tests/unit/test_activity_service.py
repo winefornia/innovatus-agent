@@ -7,8 +7,6 @@ from services.activity_service import (
     _fmt_dollars,
     _fmt_invoice,
     _fmt_reservation,
-    render_telegram_invoice_history,
-    render_telegram_reservation_history,
 )
 
 
@@ -143,52 +141,3 @@ class TestFmtReservation:
     def test_name_present(self):
         result = _fmt_reservation(self._row())
         assert result["name"] == "Smith Family"
-
-
-class TestRenderTelegramHistory:
-    def test_invoice_empty_list(self, mocker):
-        mocker.patch("db.repository.list_recent_invoices", return_value=[])
-        result = render_telegram_invoice_history(limit=10)
-        assert "No invoices" in result
-
-    def test_reservation_empty_list(self, mocker):
-        mocker.patch("db.repository.list_recent_reservations", return_value=[])
-        result = render_telegram_reservation_history(limit=10)
-        assert "No reservations" in result
-
-    def test_invoice_history_contains_customer_name(self, mocker):
-        mocker.patch(
-            "db.repository.list_recent_invoices",
-            return_value=[{
-                "customer_name": "Oak Barrel Restaurant",
-                "tier_name": "wholesale",
-                "total_before_tax_cents": 43200,
-                "approval": "approved",
-                "square_invoice_id": "inv_001",
-                "created_at": "2026-06-03T14:14:00",
-            }],
-        )
-        result = render_telegram_invoice_history(limit=10)
-        assert "Oak Barrel Restaurant" in result
-
-    def test_reservation_history_contains_client_name(self, mocker):
-        mocker.patch(
-            "db.repository.list_recent_reservations",
-            return_value=[{
-                "reservation_id": "res_001",
-                "client_name": "Smith Family",
-                "requested_date": "2026-06-15",
-                "requested_time": "14:00",
-                "guest_count": 4,
-                "experience_type": "cave_experience",
-                "current_state": "FINAL_CONFIRMED",
-                "updated_at": "2026-06-03T09:22:00",
-            }],
-        )
-        result = render_telegram_reservation_history(limit=10)
-        assert "Smith Family" in result
-
-    def test_invoice_db_error_returns_error_string(self, mocker):
-        mocker.patch("db.repository.list_recent_invoices", side_effect=Exception("DB down"))
-        result = render_telegram_invoice_history()
-        assert "Could not fetch" in result

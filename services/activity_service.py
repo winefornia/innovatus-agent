@@ -1,9 +1,7 @@
 """
 Activity Service — formats bot activity for operator review.
 
-Two surfaces:
-  - Telegram: render_telegram_invoice_history(), render_telegram_reservation_history()
-  - Web:      render_html_activity_page() → self-contained HTML
+One surface: render_html_activity_page() → self-contained HTML (GET /activity).
 
 Shows results only — no internal state, no trace events, no confidence scores.
 The goal: Cecil or Lisa can see what the bot did, verify it, and catch exceptions.
@@ -151,70 +149,6 @@ def _fmt_reservation(row: dict) -> dict:
         "ts_raw":        ts,
         "ts":            _fmt_ts(ts),
     }
-
-
-# ---------------------------------------------------------------------------
-# Telegram renderers
-# ---------------------------------------------------------------------------
-
-def render_telegram_invoice_history(limit: int = 10) -> str:
-    """Return a Telegram-ready string of recent invoice activity."""
-    from db.repository import list_recent_invoices
-
-    limit = min(max(1, limit), 20)
-    try:
-        rows = list_recent_invoices(limit=limit)
-    except Exception as e:
-        return f"Could not fetch invoices: {e}"
-
-    if not rows:
-        return "No invoices recorded yet."
-
-    parts = [f"📋 Recent Invoices (last {len(rows)})\n"]
-    for row in rows:
-        inv = _fmt_invoice(row)
-        emoji = _STATUS_EMOJI[inv["outcome_class"]]
-        detail = "  " + " · ".join(filter(None, [inv["tier"], inv["amount"]]))
-        sq = f"  Square {inv['square_id']}" if inv["square_id"] else ""
-        ts = f"  {inv['ts']}" if inv["ts"] else ""
-        block = f"• {inv['name']}\n{detail}\n  {emoji} {inv['outcome_label']}{sq}\n{ts}".strip()
-        parts.append(block)
-
-    return "\n\n".join(parts)
-
-
-def render_telegram_reservation_history(limit: int = 10) -> str:
-    """Return a Telegram-ready string of recent tasting room activity."""
-    from db.repository import list_recent_reservations
-
-    limit = min(max(1, limit), 20)
-    try:
-        rows = list_recent_reservations(limit=limit)
-    except Exception as e:
-        return f"Could not fetch reservations: {e}"
-
-    if not rows:
-        return "No reservations recorded yet."
-
-    parts = [f"🍷 Recent Reservations (last {len(rows)})\n"]
-    for row in rows:
-        res = _fmt_reservation(row)
-        emoji = _STATUS_EMOJI[res["outcome_class"]]
-        detail_parts = list(filter(None, [res["when"], res["guests"]]))
-        detail = "  " + " · ".join(detail_parts) if detail_parts else ""
-        exp = f"  {res['experience']}" if res["experience"] else ""
-        ts = f"  {res['ts']}" if res["ts"] else ""
-        lines = [f"• {res['name']}"]
-        if detail:
-            lines.append(detail)
-        if exp:
-            lines.append(exp)
-        lines.append(f"  {emoji} {res['outcome_label']}")
-        if ts:
-            lines.append(ts)
-        parts.append("\n".join(lines))
-
-    return "\n\n".join(parts)
 
 
 # ---------------------------------------------------------------------------

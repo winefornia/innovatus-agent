@@ -12,7 +12,7 @@ served from a dedicated route on this same server: /webhooks/google-chat/tasting
 Everything here is config-gated on GOOGLE_CHAT_TR_SPACE, so when it is unset no
 approval card is pushed (the action is still persisted and visible via /status).
 
-Button scheme: each button's action carries the same callback string the Telegram
+Button scheme: each button's action carries the same callback string the original
 path used — "tr:{action_id}:{decision}" — so _rows_for_action() is reused verbatim.
 
 Production hardening (lifted from google_chat_adapter.py, learned the hard way):
