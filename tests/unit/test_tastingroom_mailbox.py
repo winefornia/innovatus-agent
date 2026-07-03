@@ -43,3 +43,46 @@ def test_process_gmail_message_uses_reservation_state_for_labels(monkeypatch):
     assert result["state"] == "READY_TO_OFFER_CLIENT"
     assert result["engine"] == "agent"
     assert "Tasting Room/Action Needed" in applied["add_labels"]
+
+
+# ── intake-root separation: invoice pipeline vs tasting room ─────────────────
+
+class TestSquareMailIsNotTastingIntake:
+    """Tasting cases are born and fed ONLY through the Squarespace-form pipeline
+    (the Mira Park path) + their own case threads. Square invoice notifications
+    belong to the invoice pipeline and must be rejected at the candidate filter,
+    whatever their subject says."""
+
+    def _square(self, subject):
+        return {"message_id": "m1", "subject": subject,
+                "from": "Square <invoicing@messaging.squareup.com>", "to": "lisa@winefornia.com"}
+
+    def test_square_invoice_created_is_rejected(self):
+        from services.tastingroom_mailbox import _looks_like_tastingroom_message
+        assert not _looks_like_tastingroom_message(
+            self._square("A new invoice was created for Christina Yoo (#202468)"))
+
+    def test_square_invoice_paid_is_rejected(self):
+        from services.tastingroom_mailbox import _looks_like_tastingroom_message
+        assert not _looks_like_tastingroom_message(
+            self._square("An invoice was paid by Christina Yoo! (#202468)"))
+
+    def test_square_mail_rejected_even_with_tasting_words(self):
+        # A Square notification about the tasting DEPOSIT still isn't intake —
+        # payment state is card-confirmed by staff / verified via Square API.
+        from services.tastingroom_mailbox import _looks_like_tastingroom_message
+        assert not _looks_like_tastingroom_message(
+            self._square("Invoice paid — Innovatus tasting reservation deposit"))
+
+    def test_squarespace_form_is_still_intake(self):
+        from services.tastingroom_mailbox import _looks_like_tastingroom_message
+        assert _looks_like_tastingroom_message({
+            "message_id": "m2",
+            "subject": "Form Submission - Wine tasting Booking",
+            "from": "form-submission@squarespace.info", "to": "lisa@winefornia.com"})
+
+    def test_default_gmail_query_has_no_square_terms(self):
+        from app.config import GMAIL_TASTING_QUERY
+        q = GMAIL_TASTING_QUERY.lower()
+        assert "squareup" not in q
+        assert "invoice" not in q

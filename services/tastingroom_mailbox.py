@@ -1,4 +1,12 @@
-"""Gmail ingestion for tasting room reservation coordination."""
+"""Gmail ingestion for tasting room reservation coordination.
+
+Intake roots are the SAME pipeline every case follows (the Mira Park path):
+a Squarespace booking form opens the case, and only that case's own threads
+(client replies, Josh/facility replies) continue it. The invoice pipeline is
+fully separate — Square notification emails are rejected as candidates here,
+and even if one slips in via an attached thread, the reservation matcher
+refuses to attach it unless the case is expecting that exact deposit invoice.
+"""
 
 from __future__ import annotations
 
@@ -79,6 +87,12 @@ def _looks_like_tastingroom_message(msg: dict[str, Any]) -> bool:
         msg.get("from", ""),
         msg.get("to", ""),
     ]).lower()
+    # Tasting-room mail only. Square invoice notifications are deliberately NOT
+    # recognized here — they arrive for every Winefornia invoice (wine orders
+    # included) and belong to the invoice pipeline; treating them as tasting
+    # intake invented phantom reservations for wine buyers (June 2026).
+    if "@messaging.squareup.com" in haystack:
+        return False
     needles = (
         "form submission - wine tasting booking",
         "form-submission@squarespace.info",
@@ -86,9 +100,6 @@ def _looks_like_tastingroom_message(msg: dict[str, Any]) -> bool:
         "josh@thecavesatsodacanyon.com",
         "josh uran",
         "cecil.park@winefornia.com",
-        "invoicing@messaging.squareup.com",
-        "new invoice was created",
-        "invoice was paid",
         "winery visit",
         "tasting request",
         "tasting availability",
