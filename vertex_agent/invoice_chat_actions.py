@@ -185,6 +185,8 @@ def confirm_pending_action() -> str:
             return _exec_set_availability(**params)
         if kind == "invoice":
             return _exec_invoice(**params)
+        if kind == "send_existing":
+            return _exec_send_existing(**params)
     except Exception as exc:  # pragma: no cover - defensive
         log.warning("[inv:chat-actions] confirm failed (%s): %s", kind, exc)
         return f"That didn't go through — {exc}"
@@ -598,6 +600,63 @@ def stage_invoice(customer_name: str, customer_email: str, tier: str, items_json
     }, summary)
 
 
+# ── WRITE tool: send an EXISTING draft invoice (confirm-first) ────────────────
+
+def stage_send_invoice(customer_name: str = "", invoice_number: str = "") -> str:
+    """Send an ALREADY-DRAFTED invoice to the customer (publishes the Square
+    draft). Use when staff ask to send an invoice that exists as a draft —
+    "send Christina's invoice", "publish the Oak Barrel draft", "send it" after
+    a draft was created earlier. Confirm-first: stages, then the user replies yes.
+
+    The draft is found in the durable invoice log (Supabase) and verified
+    against Square, so this works even for drafts created in an earlier
+    conversation or before a redeploy.
+
+    Args:
+        customer_name: whose draft to send (name as staff say it; fuzzy ok).
+        invoice_number: exact Square invoice id if staff gave one (optional).
+    """
+    from db.repository import get_recent_invoice_for_customer
+    from services import square_service
+
+    invoice_id = (invoice_number or "").strip()
+    if not invoice_id:
+        if not (customer_name or "").strip():
+            return "Whose invoice should I send? Give me the customer name (or an invoice number)."
+        try:
+            row = get_recent_invoice_for_customer(customer_name=customer_name.strip())
+        except Exception as exc:  # pragma: no cover - defensive
+            return f"Couldn't look up recent invoices — {exc}"
+        if not row or not row.get("square_invoice_id"):
+            return (f"I couldn't find a drafted invoice for {customer_name}. "
+                    "Check recent_invoices, or give me the invoice number.")
+        invoice_id = row["square_invoice_id"]
+
+    inv = square_service.get_invoice(invoice_id)
+    if inv.get("error"):
+        return f"Couldn't fetch that invoice from Square — {inv['error']}"
+    status = (inv.get("status") or "").upper()
+    label = inv.get("invoice_number") or invoice_id
+    if status != "DRAFT":
+        url = inv.get("public_url")
+        if status in ("UNPAID", "SCHEDULED", "PARTIALLY_PAID", "PAID"):
+            return (f"Invoice {label} was already sent (status {status})."
+                    + (f"\nPayment link: {url}" if url else ""))
+        return f"Invoice {label} is {status or 'in an unknown state'} — I can only send drafts."
+
+    total = _money(inv.get("total_money_cents"))
+    summary = (
+        f"Ready to SEND invoice *{label}*"
+        + (f" for *{customer_name}*" if (customer_name or "").strip() else "")
+        + f" — total {total}. This publishes it to the customer.\n\n"
+        "Reply *yes* to send it."
+    )
+    return _stage("send_existing", {
+        "invoice_id": invoice_id, "customer_name": (customer_name or "").strip(),
+        "idem": uuid.uuid4().hex,
+    }, summary)
+
+
 # ── pricing quote (shared by price_order + stage_invoice) ─────────────────────
 
 def _quote(tier: str, items_json: str) -> dict:
@@ -822,6 +881,33 @@ def _exec_invoice(customer_name, customer_email, tier, items_json, payment_sched
             + (f"\nPayment link: {url}" if url else ""))
 
 
+def _exec_send_existing(invoice_id, customer_name="", idem="") -> str:
+    """Publish an existing Square draft after the user's yes. Re-fetches the
+    invoice for its current version (Square rejects stale-version publishes)."""
+    from services import square_service
+
+    inv = square_service.get_invoice(invoice_id)
+    if inv.get("error"):
+        return f"Couldn't fetch the draft — {inv['error']}"
+    label = inv.get("invoice_number") or invoice_id
+    status = (inv.get("status") or "").upper()
+    if status != "DRAFT":
+        url = inv.get("public_url")
+        return (f"Invoice {label} is {status or 'in an unknown state'} now — nothing sent."
+                + (f"\nPayment link: {url}" if url else ""))
+
+    pub = square_service.publish_invoice(
+        invoice_id, invoice_version=inv.get("version") or 0,
+        idempotency_key=f"{idem}-pub"[:45])
+    if pub.get("error"):
+        return f"Publishing failed — {pub['error']}. The draft is untouched."
+    url = pub.get("public_url")
+    who = f" to {customer_name}" if customer_name else ""
+    total = _money(inv.get("total_money_cents"))
+    return (f"Sent ✅ — invoice {label}{who}, {total}."
+            + (f"\nPayment link: {url}" if url else ""))
+
+
 def _log_invoice_best_effort(customer_name, customer_email, tier, line_items, quote, draft, send, shipping_cents=0) -> None:
     try:
         from db.models import InvoiceLog
@@ -854,6 +940,7 @@ WRITE_TOOLS = [
     stage_set_tier,
     stage_set_availability,
     stage_invoice,
+    stage_send_invoice,
     confirm_pending_action,
     cancel_pending_action,
 ]

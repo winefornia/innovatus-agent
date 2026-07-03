@@ -245,3 +245,64 @@ class TestApplyProduct:
 
 def test_confirm_with_nothing_pending():
     assert "nothing waiting" in ica.confirm_pending_action().lower()
+
+
+# ── send an existing draft (reopen a case later) ──────────────────────────────
+
+class TestStageSendInvoice:
+    """"send Christina's invoice" days after drafting: the draft is found in the
+    durable invoice log + Square, staged confirm-first, and published on yes —
+    so a finished case can be reopened toward its final SENT state even after a
+    redeploy wiped the in-process conversation memory."""
+
+    def _draft(self, status="DRAFT", version=3):
+        return {"invoice_id": "inv_9", "invoice_number": "WF-0009", "version": version,
+                "status": status, "public_url": "https://sq/pay/inv_9",
+                "total_money_cents": 79500}
+
+    def test_stages_from_customer_name(self, mocker):
+        mocker.patch("db.repository.get_recent_invoice_for_customer",
+                     return_value={"square_invoice_id": "inv_9"})
+        mocker.patch("services.square_service.get_invoice", return_value=self._draft())
+        out = ica.stage_send_invoice(customer_name="Christina Yoo")
+        assert "SEND invoice" in out and "WF-0009" in out and "$795.00" in out
+        assert ica._PENDING  # staged, not executed
+        assert ica._PENDING[ica._user()]["kind"] == "send_existing"
+
+    def test_no_draft_found_asks_instead_of_staging(self, mocker):
+        mocker.patch("db.repository.get_recent_invoice_for_customer", return_value=None)
+        out = ica.stage_send_invoice(customer_name="Nobody")
+        assert "couldn't find" in out.lower()
+        assert not ica._PENDING
+
+    def test_no_name_or_number_asks(self):
+        out = ica.stage_send_invoice()
+        assert "customer name" in out.lower()
+        assert not ica._PENDING
+
+    def test_already_sent_reports_instead_of_staging(self, mocker):
+        mocker.patch("services.square_service.get_invoice",
+                     return_value=self._draft(status="UNPAID"))
+        out = ica.stage_send_invoice(invoice_number="inv_9")
+        assert "already sent" in out.lower()
+        assert not ica._PENDING
+
+    def test_confirm_publishes_with_current_version(self, mocker):
+        mocker.patch("db.repository.get_recent_invoice_for_customer",
+                     return_value={"square_invoice_id": "inv_9"})
+        mocker.patch("services.square_service.get_invoice", return_value=self._draft(version=7))
+        publish = mocker.patch("services.square_service.publish_invoice",
+                               return_value={"status": "published", "invoice_id": "inv_9",
+                                             "public_url": "https://sq/pay/inv_9"})
+        ica.stage_send_invoice(customer_name="Christina Yoo")
+        out = ica.confirm_pending_action()
+        assert "Sent" in out and "WF-0009" in out
+        assert publish.call_args.kwargs.get("invoice_version") == 7 or publish.call_args.args[1:2] == (7,)
+        assert not ica._PENDING  # consumed
+
+    def test_confirm_when_draft_vanished_is_safe(self, mocker):
+        mocker.patch("services.square_service.get_invoice",
+                     side_effect=[self._draft(), self._draft(status="CANCELED")])
+        ica.stage_send_invoice(invoice_number="inv_9")
+        out = ica.confirm_pending_action()
+        assert "nothing sent" in out.lower()
