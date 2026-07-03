@@ -29,14 +29,20 @@ GMAIL_TASTING_SOURCE_LABELS = [
 ]
 GMAIL_TASTING_ROOT_LABEL = os.getenv("GMAIL_TASTING_ROOT_LABEL", "Tasting Room")
 GMAIL_TASTING_PROCESSED_LABEL = os.getenv("GMAIL_TASTING_PROCESSED_LABEL", "Tasting Room/Processed")
+# Tasting-room intake roots ONLY: the Squarespace booking form (the sole way a
+# NEW case is born), Josh/facility replies, and client/staff conversation mail.
+# Square invoice notifications are deliberately ABSENT: they arrive for every
+# Winefornia invoice — wine orders included — and belong to the invoice
+# pipeline. Tasting deposit payment state is card-confirmed by staff and
+# verifiable via the Square API (scripts/verify_tastingroom_square_invoices.py),
+# never inferred from Square emails.
 GMAIL_TASTING_QUERY = os.getenv(
     "GMAIL_TASTING_QUERY",
     '(from:josh@thecavesatsodacanyon.com OR '
-    'from:invoicing@messaging.squareup.com OR '
     'from:form-submission@squarespace.info OR '
     'from:innovatuswine.com OR '
     'subject:"Form Submission - Wine tasting Booking" OR '
-    'subject:"Availability Check" OR subject:"new invoice was created" OR subject:"invoice was paid")',
+    'subject:"Availability Check")',
 )
 GMAIL_TASTING_POLL_SECONDS = int(os.getenv("GMAIL_TASTING_POLL_SECONDS", "60"))
 JOSH_EMAIL = os.getenv("JOSH_EMAIL", "josh@thecavesatsodacanyon.com")
