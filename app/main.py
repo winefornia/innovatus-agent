@@ -6,6 +6,9 @@ Primary interface: Telegram bot via `python bot.py` (long polling, 24/7).
 Endpoints:
   POST /intake                  — generic text intake (email forward, Zapier, etc.)
   POST /intake/pdf              — direct PDF upload
+  POST /agents/invoice/run      — dashboard chat turn (same path as /intake)
+  POST /agents/invoice/resume   — answer a pending interrupt (approval, shipping, ...)
+  GET  /                        — operator dashboard (app/static/index.html)
   POST /webhooks/email          — Mailgun / SendGrid inbound parse webhook
   POST /webhooks/gmail/poll     — poll Gmail "To Invoice" label
   GET  /invoices/recent         — recent invoice log
@@ -16,10 +19,11 @@ import asyncio
 import logging
 import os
 import uuid
-from typing import Optional
+from pathlib import Path
+from typing import Any, Optional
 
 from fastapi import FastAPI, Request, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 # The web process runs under uvicorn, which only configures its own loggers.
@@ -52,6 +56,26 @@ class IntakeRequest(BaseModel):
 # Generic intake — email forwards, Zapier, Make, n8n, manual paste
 # ---------------------------------------------------------------------------
 
+def _jsonable_graph_result(result: dict) -> dict:
+    """Make a graph invoke() result JSON-safe for API/dashboard consumers.
+
+    A pending interrupt arrives under "__interrupt__" as langgraph Interrupt
+    objects; clients (app/static/index.html) read the .value payload — whose
+    "type" field decides which step to render (shipping question, approval
+    card, ...). Normalize to plain [{"value": {...}}] regardless of
+    langgraph/checkpointer version.
+    """
+    out = dict(result or {})
+    raw = out.pop("__interrupt__", None)
+    if raw:
+        vals = []
+        for i in raw:
+            v = getattr(i, "value", i)
+            vals.append({"value": v if isinstance(v, dict) else {}})
+        out["__interrupt__"] = vals
+    return out
+
+
 @app.post("/intake")
 def intake(req: IntakeRequest):
     """Feed any text (forwarded email, Zapier trigger, etc.) into the agent.
@@ -61,8 +85,8 @@ def intake(req: IntakeRequest):
     msg    = from_api(req.message, sender_id=req.sender_id, thread_id=req.thread_id)
     result = gateway.dispatch(msg)
     if result.get("error") and not result.get("final_response"):
-        return JSONResponse(status_code=500, content=result)
-    return result
+        return JSONResponse(status_code=500, content=_jsonable_graph_result(result))
+    return _jsonable_graph_result(result)
 
 
 # ---------------------------------------------------------------------------
@@ -81,8 +105,69 @@ async def intake_pdf(
     msg       = from_pdf(message, sender_id=sender_id, thread_id=thread_id)
     result    = gateway.dispatch(msg)
     if result.get("error") and not result.get("final_response"):
-        return JSONResponse(status_code=500, content=result)
-    return {"extracted_message": message, **result}
+        return JSONResponse(status_code=500, content=_jsonable_graph_result(result))
+    return _jsonable_graph_result({"extracted_message": message, **result})
+
+
+# ---------------------------------------------------------------------------
+# Web dashboard (app/static/index.html) — chat turns + interrupt resumes
+# ---------------------------------------------------------------------------
+
+class InvoiceRunRequest(BaseModel):
+    message: str
+    sender_id: str = "web_ui"
+    thread_id: Optional[str] = None   # auto-generated if omitted
+
+
+class InvoiceResumeRequest(BaseModel):
+    thread_id: str
+    decision: Any   # typed text for text interrupts; token/JSON for button clicks
+
+
+@app.post("/agents/invoice/run")
+def invoice_run(req: InvoiceRunRequest):
+    """A dashboard chat turn. Same normalized path as /intake (guardrails,
+    control-layer case records), returned with the pending interrupt payload so
+    the UI can render the right step (shipping question, approval card, ...)."""
+    msg    = from_api(req.message, sender_id=req.sender_id, thread_id=req.thread_id)
+    result = gateway.dispatch(msg)
+    if result.get("error") and not result.get("final_response"):
+        return JSONResponse(status_code=500, content=_jsonable_graph_result(result))
+    return _jsonable_graph_result(result)
+
+
+@app.post("/agents/invoice/resume")
+def invoice_resume(req: InvoiceResumeRequest):
+    """Answer the invoice graph's pending human-input checkpoint — an approval
+    click, a shipping reply ('free' / '$30'), a missing-info reply — and return
+    the resulting state. 409 when nothing is waiting (e.g. stale browser tab)."""
+    from langgraph.types import Command
+    from agents.invoice_graph import invoice_graph
+
+    config = {"configurable": {"thread_id": req.thread_id}}
+    try:
+        snapshot = invoice_graph.get_state(config)
+        if not (snapshot and snapshot.next):
+            return JSONResponse(status_code=409, content={
+                "thread_id": req.thread_id,
+                "final_response": ("Nothing is waiting on a reply for this conversation — "
+                                   "start a new request."),
+            })
+        result = invoice_graph.invoke(Command(resume=req.decision), config=config)
+    except Exception as e:
+        logging.error("[api:resume] resume failed thread=%s: %s", req.thread_id, e, exc_info=True)
+        return JSONResponse(status_code=500, content={
+            "thread_id": req.thread_id,
+            "final_response": f"Something went wrong resuming: {e}",
+            "error": str(e),
+        })
+    return _jsonable_graph_result({"thread_id": req.thread_id, **result})
+
+
+@app.get("/", include_in_schema=False)
+def dashboard():
+    """Serve the operator dashboard (chat UI over /agents/invoice/*)."""
+    return FileResponse(Path(__file__).resolve().parent / "static" / "index.html")
 
 
 # ---------------------------------------------------------------------------

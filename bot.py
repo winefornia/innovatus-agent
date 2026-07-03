@@ -19,7 +19,7 @@ from langgraph.types import Command
 
 from agents.invoice_graph import invoice_graph
 from services.control_layer import control
-from services.invoice_interrupts import current_invoice_interrupt as which
+from services.invoice_interrupts import TEXT_INPUT_INTERRUPTS, current_invoice_interrupt as which
 
 
 def _close_case_if_done(result: dict, ix_after: str | None) -> None:
@@ -144,6 +144,7 @@ async def render(client: httpx.AsyncClient, chat_id: int, state: dict) -> None:
         ship_cents = pr.get("shipping_cents")
         ship_str   = ("Waived" if ship_cents == 0
                       else ("TBD" if ship_cents is None else f"${ship_cents/100:.2f}"))
+        wine_total = (pr.get("wine_total_cents") or pr.get("total_before_tax_cents") or 0) / 100
         total = (pr.get("total_before_tax_cents") or 0) / 100
         body  = "\n".join(lines) or "  (no items)"
         disc_line = f"  Discount: -${disc_cents/100:.2f}\n" if disc_cents > 0 else ""
@@ -152,6 +153,7 @@ async def render(client: httpx.AsyncClient, chat_id: int, state: dict) -> None:
             f"Tier: {tier}  |  Due: {sched}\n\n"
             f"{body}\n\n"
             f"{disc_line}"
+            f"  Wine total: ${wine_total:.2f}\n"
             f"  Shipping: {ship_str}\n"
             f"  Total: ${total:.2f}\n\n"
             "Create this draft in Square?",
@@ -184,6 +186,11 @@ async def render(client: httpx.AsyncClient, chat_id: int, state: dict) -> None:
             "What would you like to change?\n"
             "Describe the edit (e.g. 'make it 6 bottles', 'change to NET_14', "
             "'use Oak Barrel instead').")
+
+    elif ix == "shipping":
+        await send(client, chat_id,
+            "Shipping for this Square invoice?\n"
+            "Reply 'free' to waive it, or enter a custom amount like '$30'.")
 
     elif ix == "edit_clarification":
         changes = (state.get("edit_patch") or {}).get("field_changes", [])
@@ -260,8 +267,11 @@ async def on_message(client: httpx.AsyncClient, message: dict) -> None:
     try:
         snapshot = invoice_graph.get_state(config)
         if snapshot and snapshot.next:
-            ix = which(snapshot.values)
-            if ix in ("missing", "edit_instruction", "edit_clarification"):
+            # Pass the snapshot (not .values) so detection reads the actual
+            # pending interrupt payload — state-field inference misidentifies
+            # e.g. the shipping re-ask after an edit (stale invoice_preview).
+            ix = which(snapshot)
+            if ix in TEXT_INPUT_INTERRUPTS:
                 result   = invoice_graph.invoke(Command(resume=text), config=config)
                 ix_after = which(result)
                 _close_case_if_done(result, ix_after)

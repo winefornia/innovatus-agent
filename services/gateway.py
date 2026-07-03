@@ -47,8 +47,9 @@ class NormalizedMessage:
 class Gateway:
     """Dispatches NormalizedMessages to the correct agent graph.
 
-    Currently routes everything to the invoice graph. Future: tastingroom_graph
-    for tasting room intents.
+    Currently routes normalized chat/email intake through the invoice graph.
+    Tasting-room reservations enter through the Gmail watcher and Google Chat
+    approval path instead of this gateway.
     """
 
     def dispatch(self, msg: NormalizedMessage) -> dict:

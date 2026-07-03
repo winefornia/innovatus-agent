@@ -1,11 +1,10 @@
 """
 Google Chat adapter for the Tasting Room approval flow.
 
-This is the Google Chat counterpart to the (now-removed) Telegram tasting-room
-bot. Unlike the invoice adapter (a synchronous, interrupt-driven wizard), the
-tasting-room flow is OUTBOUND-initiated: case_desk_graph creates a
-ReservationActionRequest, we post an approval card to a Chat space, a human taps
-a button, and the click resumes the channel-agnostic
+Unlike the invoice adapter (a synchronous, interrupt-driven wizard), the
+tasting-room flow is OUTBOUND-initiated: the reservation coordinator creates a
+ReservationActionRequest, this adapter posts an approval card to a Chat space, a
+human taps a button, and the click resumes the channel-agnostic
 services.tastingroom_service.process_action_decision().
 
 It runs as a SEPARATE Google Chat app (its own GCP project → its own bot identity)

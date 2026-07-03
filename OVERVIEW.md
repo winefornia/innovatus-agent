@@ -40,13 +40,13 @@ Both share one core design philosophy: **a deterministic brain owns every real-w
                                      │
               ┌──────────────────────┴───────────────────────┐
               ▼                                               ▼
-   INVOICE GRAPH (LangGraph)                    CASE-DESK GRAPH (LangGraph)
-   deterministic state machine                 evidence + LLM judgment
-   agents/invoice_graph.py                      agents/case_desk_graph.py
+   INVOICE GRAPH (LangGraph)                    TASTING-ROOM COORDINATOR
+   deterministic state machine                 Gmail watcher + goal model
+   agents/invoice_graph.py                      vertex_agent/intake.py
               │                                               │
    ┌──────────┴──────────┐                       ┌────────────┴───────────┐
-   Tool Registry      Hook Bus              Case Memory / Judge      Safety Guards
-   Skill Memory       Interrupts            (Claude Sonnet)
+   Tool Registry      Hook Bus              Gmail / Chat Approval    Supabase State
+   Skill Memory       Interrupts            (Claude-powered)
               │                                               │
               └──────────────────────┬────────────────────────┘
                                      ▼
@@ -58,12 +58,10 @@ Both share one core design philosophy: **a deterministic brain owns every real-w
 - **LLM is a sidecar.** Claude is called only for extraction, clarifying questions, fuzzy-match hints, edit parsing, and case judgment.
 - **Learning brain accumulates context.** Mem0 stores per-operator skill facts; Supabase invoice history resolves "same as last time" references.
 
-### Runtime processes (Fly.io / supervisord)
+### Runtime processes (Fly.io)
 | Process | Command | Purpose |
 |---|---|---|
 | `web` | `uvicorn app.main:app` | FastAPI HTTP endpoints + activity page |
-| `bot` | `python bot.py` | Telegram invoice bot (long polling) |
-| `tastingroom_bot` | `python tastingroom_bot.py` | Telegram tasting room bot (approval callbacks) |
 | `tastingroom_watcher` | `python scripts/tastingroom_mail_watcher.py` | Gmail poller for reservation emails |
 
 ---
@@ -74,8 +72,6 @@ Both share one core design philosophy: **a deterministic brain owns every real-w
 | Module | Role |
 |---|---|
 | `invoice_graph.py` | **Main invoice workflow.** Deterministic ~18-node state machine: classify intent → extract fields → resolve customer → confirm tier/payment → price → preview → approval gate → create Square draft → confirm send → offer receipt. Multiple human **interrupts**; Claude Haiku used only as extraction/edit-parsing sidecar. Checkpointed to PostgreSQL (Supabase). Max 2 edit rounds. |
-| `case_desk_graph.py` | **Current tasting room workflow.** 9-node evidence-and-judgment pipeline: store raw email → extract claims → resolve case → persist claims → build case bundle → **judge (Claude Sonnet)** → save judgment → update reservation cache → validate & create action request. State is *derived from LLM judgment*, not hardcoded routing. |
-| `tastingroom_graph.py` | Legacy/simpler tasting room graph (no judgment phase; deterministic `apply_state`). Used in smoke tests. |
 | `supervisor_graph.py` | Stateless intent router. Keyword fast-path for short messages, Claude Haiku for longer ones; routes to invoice vs tasting room agent. Each agent keeps a separate Mem0 namespace. |
 | `router.py` | Legacy router, superseded by `supervisor_graph.py`; kept for backward compatibility. |
 
@@ -96,12 +92,11 @@ Both share one core design philosophy: **a deterministic brain owns every real-w
 **Tasting room domain**
 | Module | Role |
 |---|---|
-| `tastingroom_service.py` | Core reservation logic: email classification, fact extraction, 26-state machine, availability claims, slot matching, LLM draft refinement. |
-| `tastingroom_mailbox.py` | Gmail ingestion: candidate filtering (Squarespace forms, facility emails), dedup, thread continuity, label management, routes to `case_desk_graph`. |
-| `tastingroom_chat_service.py` | Natural-language command layer for the tasting room Telegram bot (list pending, show case, mark invoice/payment, escalate, revise draft). |
-| `case_memory.py` | Assembles the full `CaseBundle` from DB for LLM reasoning. |
-| `case_judge.py` | **Judgment engine.** Claude Sonnet reads a CaseBundle → structured `CaseJudgment` (current truth, blockers, confidence, next-best-action, interrupt level). |
-| `safety_guards.py` | Hard rules validating a CaseJudgment against current state before any action; blocks low-confidence actions, downgrades to staff review. |
+| `tastingroom_service.py` | Core reservation logic: email classification, fact extraction, reservation state persistence, availability claims, slot matching, LLM draft refinement. |
+| `tastingroom_mailbox.py` | Gmail ingestion: candidate filtering (Squarespace forms, facility emails), dedup, thread continuity, label management, routes to `vertex_agent/intake.py`. |
+| `tastingroom_chat_service.py` | Natural-language command helpers for tasting-room staff workflows (list pending, show case, mark invoice/payment, escalate, revise draft). |
+| `vertex_agent/intake.py` | Current tasting-room coordinator entry point: stores raw events, extracts facts, updates reservation state, derives gaps, and creates approval-gated action requests. |
+| `vertex_agent/goal_model.py` | Derived goal-state model for reservation readiness and next-step selection. |
 
 **Channels & messaging**
 | Module | Role |
@@ -150,7 +145,6 @@ Both share one core design philosophy: **a deterministic brain owns every real-w
 | File | Role |
 |---|---|
 | `bot.py` | Telegram invoice bot (primary interface, long polling). |
-| `tastingroom_bot.py` | Telegram tasting room bot (`/start`, `/history`, `/status`, approve/reject callbacks). |
 | `cli.py` | Local CLI to drive the invoice graph through interrupts without Telegram. |
 | `scripts/sync.py` | Weekly cursor-based Square → Supabase sync. |
 | `scripts/migrate.py` | One-time historical data migration into Supabase. |

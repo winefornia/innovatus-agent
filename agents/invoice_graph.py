@@ -93,6 +93,7 @@ class InvoiceState(TypedDict, total=False):
     line_items: list[dict[str, Any]]
     pricing_result: dict[str, Any]  # full output of calculate_invoice_prices
     awaiting_price: Any             # variable-pricing items pending operator price (interrupt)
+    shipping_cents: int             # human-confirmed shipping fee; 0 means free/waived
 
     # Invoice preview
     invoice_preview: dict[str, Any]
@@ -793,6 +794,63 @@ def _parse_price_to_cents(text) -> int | None:
     return int(round(float(m.group(1)) * 100))
 
 
+def _parse_shipping_to_cents(value) -> int | None:
+    """Parse a shipping reply into cents.
+
+    "free", "waive", "0", and "$0" all mean no shipping charge. A dollar amount
+    means a custom shipping line should be added to the Square order.
+    """
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    if any(tok in text for tok in ("free", "waive", "waived", "no shipping")):
+        return 0
+    cents = _parse_price_to_cents(text)
+    if cents is None:
+        return None
+    return max(0, cents)
+
+
+def confirm_shipping_fee(state: InvoiceState) -> InvoiceState:
+    """Interrupt for the operator to confirm shipping before approval/Square.
+
+    This makes the invoice total and the eventual Square order agree. Shipping is
+    an explicit human choice: free/waived or a custom dollar amount.
+    """
+    pricing = state.get("pricing_result", {}) or {}
+    suggested = pricing.get("shipping_cents")
+    if state.get("shipping_cents") is not None:
+        return {}
+
+    wine_total = (pricing.get("total_before_tax_cents") or 0) / 100
+    default_note = (
+        "The pricing service suggests shipping is waived for this order. "
+        if suggested == 0
+        else "Shipping is not set yet. "
+    )
+    response = interrupt({
+        "type": "shipping_fee_confirmation",
+        "wine_total": f"${wine_total:.2f}",
+        "suggested_shipping_cents": suggested,
+        "question": (
+            f"{default_note}Shipping for the Square invoice?\n"
+            "Reply 'free' to waive it, or enter a custom amount like '$30'."
+        ),
+    })
+
+    cents = _parse_shipping_to_cents(response)
+    if cents is None:
+        # Keep the checkpoint focused; unparseable input safely means waived,
+        # but surface a warning in the preview so the operator can edit/reject.
+        cents = 0
+        warnings = list(pricing.get("warnings") or [])
+        warnings.append(f"Shipping reply {response!r} was not understood; defaulted to free.")
+        pricing = {**pricing, "warnings": warnings}
+    return {"shipping_cents": cents, "pricing_result": {**pricing, "shipping_cents": cents}}
+
+
 def confirm_item_prices(state: InvoiceState) -> InvoiceState:
     """Interrupt to ask the operator for a per-bottle price on a variable-pricing
     item, then attach it to the matching extracted item and re-price."""
@@ -851,7 +909,16 @@ def create_invoice_preview(state: InvoiceState) -> InvoiceState:
     from services.approval_service import format_approval_request
 
     customer = state.get("customer", {})
-    pricing = state.get("pricing_result", {})
+    pricing = dict(state.get("pricing_result", {}) or {})
+    shipping_cents = state.get("shipping_cents")
+    if shipping_cents is None:
+        shipping_cents = pricing.get("shipping_cents")
+    if shipping_cents is None:
+        shipping_cents = 0
+    wine_total_cents = pricing.get("total_before_tax_cents", 0)
+    total_with_shipping_cents = int(wine_total_cents or 0) + int(shipping_cents or 0)
+    pricing["shipping_cents"] = shipping_cents
+    pricing["total_with_shipping_cents"] = total_with_shipping_cents
 
     preview_text = format_approval_request(
         customer_name=customer.get("full_name", "Unknown"),
@@ -860,8 +927,8 @@ def create_invoice_preview(state: InvoiceState) -> InvoiceState:
         line_items=state.get("line_items", []),
         subtotal_cents=pricing.get("subtotal_cents", 0),
         discount_cents=pricing.get("discount_cents", 0),
-        total_before_tax_cents=pricing.get("total_before_tax_cents", 0),
-        shipping_cents=pricing.get("shipping_cents"),
+        total_before_tax_cents=wine_total_cents,
+        shipping_cents=shipping_cents,
         warnings=pricing.get("warnings", []),
         missing_fields=pricing.get("blocks", []),
     )
@@ -872,13 +939,15 @@ def create_invoice_preview(state: InvoiceState) -> InvoiceState:
         "line_items": state.get("line_items", []),
         "subtotal_cents": pricing.get("subtotal_cents", 0),
         "discount_cents": pricing.get("discount_cents", 0),
-        "total_before_tax_cents": pricing.get("total_before_tax_cents", 0),
-        "shipping_cents": pricing.get("shipping_cents"),
+        "wine_total_cents": wine_total_cents,
+        "total_before_tax_cents": total_with_shipping_cents,
+        "shipping_cents": shipping_cents,
+        "total_with_shipping_cents": total_with_shipping_cents,
         "payment_schedule": state.get("payment_schedule", "NET_30"),
         "payment_methods": state.get("payment_methods", ["CARD", "BANK_ACCOUNT"]),
         "preview_text": preview_text,
     }
-    return {"invoice_preview": preview, "final_response": preview_text}
+    return {"invoice_preview": preview, "pricing_result": pricing, "final_response": preview_text}
 
 
 # Strict token sets for high-risk gates (approve/send).
@@ -985,6 +1054,7 @@ def create_square_invoice_draft(state: InvoiceState) -> InvoiceState:
         order_result = tool_registry.dispatch(
             "square_create_order",
             {"customer_name": full_name, "line_items": state.get("line_items", []),
+             "shipping_cents": state.get("shipping_cents", 0),
              "idempotency_key": _ikey(case_id, "create_order")},
             case_id=case_id,
         )
@@ -1055,6 +1125,10 @@ def create_square_invoice_draft(state: InvoiceState) -> InvoiceState:
 def _build_invoice_log(state, customer, email, full_name, order_id, invoice_result):
     from db.models import InvoiceLog
     pricing = state.get("pricing_result", {})
+    shipping_cents = state.get("shipping_cents", pricing.get("shipping_cents") or 0)
+    total_cents = pricing.get("total_with_shipping_cents")
+    if total_cents is None:
+        total_cents = (pricing.get("total_before_tax_cents") or 0) + (shipping_cents or 0)
     return InvoiceLog(
         thread_id=state.get("sender_id", invoice_result["invoice_id"]),
         sender_id=state.get("sender_id"),
@@ -1066,8 +1140,8 @@ def _build_invoice_log(state, customer, email, full_name, order_id, invoice_resu
         line_items=state.get("line_items", []),
         subtotal_cents=pricing.get("subtotal_cents"),
         discount_cents=pricing.get("discount_cents"),
-        total_before_tax_cents=pricing.get("total_before_tax_cents"),
-        shipping_cents=pricing.get("shipping_cents"),
+        total_before_tax_cents=total_cents,
+        shipping_cents=shipping_cents,
         payment_schedule=state.get("payment_schedule"),
         payment_methods=state.get("payment_methods", []),
         approval="approved",
@@ -1326,6 +1400,8 @@ def apply_patch(state: InvoiceState) -> InvoiceState:
         "line_items": line_items,
         "approval": None,           # will go back to approval_gate after re-pricing
     }
+    if patch.get("requires_price_recalculation", False):
+        out["shipping_cents"] = None
     if tier_name:
         out["tier_name"] = tier_name
     if sched:
@@ -1403,7 +1479,7 @@ def _route_after_pricing(state: InvoiceState) -> str:
         return "respond"
     if pr.get("needs_price"):
         return "confirm_item_prices"   # ask the operator for a price, then re-price
-    return "create_invoice_preview"
+    return "confirm_shipping_fee"
 
 
 def _route_after_approval(state: InvoiceState) -> str:
@@ -1439,6 +1515,7 @@ def build_invoice_graph(checkpointer=None):
     g.add_node("confirm_tier_and_payment", confirm_tier_and_payment)
     g.add_node("resolve_products_and_prices", resolve_products_and_prices)
     g.add_node("confirm_item_prices", confirm_item_prices)
+    g.add_node("confirm_shipping_fee", confirm_shipping_fee)
     g.add_node("create_invoice_preview", create_invoice_preview)
     g.add_node("approval_gate", approval_gate)
     g.add_node("interpret_edit", interpret_edit)
@@ -1480,11 +1557,13 @@ def build_invoice_graph(checkpointer=None):
         {
             "create_invoice_preview": "create_invoice_preview",
             "confirm_item_prices": "confirm_item_prices",
+            "confirm_shipping_fee": "confirm_shipping_fee",
             "respond": "respond",
         },
     )
     # After the operator confirms a price, re-price (loops until all priced).
     g.add_edge("confirm_item_prices", "resolve_products_and_prices")
+    g.add_edge("confirm_shipping_fee", "create_invoice_preview")
     g.add_edge("create_invoice_preview", "approval_gate")
     g.add_conditional_edges(
         "approval_gate",

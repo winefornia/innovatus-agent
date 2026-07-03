@@ -91,6 +91,33 @@ def _amount_to_cents(value: Any) -> int | None:
         return None
 
 
+def _shipping_to_cents(value: Any) -> int | None:
+    """Parse invoice-chat shipping input.
+
+    Returns None when shipping is genuinely unanswered. "free"/"waived" and 0
+    are valid answers and return 0.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value < 0:
+        return None
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if not text:
+            return None
+        if any(tok in text for tok in ("free", "waive", "waived", "no shipping")):
+            return 0
+        if text in {"-1", "unknown", "tbd", "not sure"}:
+            return None
+    try:
+        cents = _amount_to_cents(value)
+    except Exception:
+        return None
+    if cents is None:
+        return None
+    return max(0, cents)
+
+
 def _to_float(value: Any) -> float | None:
     """Parse a number that may arrive as "25%", "0.7", or 25. None if unparseable."""
     if value is None:
@@ -515,7 +542,8 @@ def stage_set_availability(product: str, tier: str, available: bool, vintage: in
 # ── WRITE tool: create / send a Square invoice (confirm-first) ─────────────────
 
 def stage_invoice(customer_name: str, customer_email: str, tier: str, items_json: str,
-                  payment_schedule: str = "NET_30", send: bool = False) -> str:
+                  payment_schedule: str = "NET_30", shipping_fee: float = -1,
+                  send: bool = False) -> str:
     """Stage creating a Square invoice for an order, then ask the user to confirm.
     Prices the order first and shows the total. Nothing is created in Square until
     the user says yes. Set send=true only when staff clearly want it SENT to the
@@ -531,6 +559,8 @@ def stage_invoice(customer_name: str, customer_email: str, tier: str, items_json
         tier: pricing tier name.
         items_json: JSON array of items — same shape as price_order's items_json.
         payment_schedule: UPON_RECEIPT | NET_7 | NET_14 | NET_30 (default NET_30).
+        shipping_fee: shipping charge in dollars; use 0 for free/waived shipping,
+            or -1 when unknown so the tool asks the user.
         send: true to PUBLISH (send to customer), false to keep a draft.
     """
     quote = _quote(tier, items_json)
@@ -543,13 +573,19 @@ def stage_invoice(customer_name: str, customer_email: str, tier: str, items_json
         return f"I need a price for: {labels}. Tell me the per-bottle price and I'll re-quote."
     if not (customer_email or "").strip():
         return "I need the customer's email to create the invoice. What is it?"
+    shipping_cents = _shipping_to_cents(shipping_fee)
+    if shipping_cents is None:
+        return "Shipping for this invoice — is it free/waived, or what custom amount should I add (for example $30)?"
     sched = _norm_schedule(payment_schedule)
     verb = "create AND SEND" if send else "create a draft of"
+    total_cents = (quote.get("total_cents") or 0) + shipping_cents
+    shipping_line = "Shipping: free/waived" if shipping_cents == 0 else f"Shipping: {_money(shipping_cents)}"
     summary = (
         f"Ready to {verb} this invoice:\n"
         f"*{customer_name}* — {tier}, {sched}\n"
         f"{quote['summary']}\n"
-        f"Total: *{quote['total']}*\n\n"
+        f"{shipping_line}\n"
+        f"Total: *{_money(total_cents)}*\n\n"
         f"Reply *yes* to confirm" + (" and send it." if send else " (draft only).")
     )
     # A stable token so an accidental double-confirm/retry dedupes at Square rather
@@ -557,7 +593,8 @@ def stage_invoice(customer_name: str, customer_email: str, tier: str, items_json
     return _stage("invoice", {
         "customer_name": customer_name, "customer_email": customer_email.strip(),
         "tier": tier, "items_json": items_json,
-        "payment_schedule": sched, "send": bool(send), "idem": uuid.uuid4().hex,
+        "payment_schedule": sched, "shipping_cents": shipping_cents,
+        "send": bool(send), "idem": uuid.uuid4().hex,
     }, summary)
 
 
@@ -736,7 +773,7 @@ def _exec_set_tier(name, fields) -> str:
 
 # ── execution: create / send Square invoice ───────────────────────────────────
 
-def _exec_invoice(customer_name, customer_email, tier, items_json, payment_schedule, send, idem="") -> str:
+def _exec_invoice(customer_name, customer_email, tier, items_json, payment_schedule, shipping_cents=0, send=False, idem="") -> str:
     from services import square_service
 
     quote = _quote(tier, items_json)
@@ -753,7 +790,8 @@ def _exec_invoice(customer_name, customer_email, tier, items_json, payment_sched
         return f"Couldn't set up the Square customer — {cust['error']}"
 
     order = square_service.create_order(
-        customer_name, line_items, idempotency_key=f"{ik}-order"[:45])
+        customer_name, line_items, idempotency_key=f"{ik}-order"[:45],
+        shipping_cents=shipping_cents or 0)
     if order.get("error"):
         return f"Couldn't create the Square order — {order['error']}"
 
@@ -765,10 +803,11 @@ def _exec_invoice(customer_name, customer_email, tier, items_json, payment_sched
     if draft.get("error"):
         return f"Couldn't create the invoice draft — {draft['error']}"
 
-    _log_invoice_best_effort(customer_name, customer_email, tier, line_items, quote, draft, send)
+    _log_invoice_best_effort(customer_name, customer_email, tier, line_items, quote, draft, send, shipping_cents)
 
     if not send:
-        return (f"Draft created ✅ — {customer_name}, {quote['total']} ({tier}, {payment_schedule}). "
+        total = _money((quote.get("total_cents") or 0) + (shipping_cents or 0))
+        return (f"Draft created ✅ — {customer_name}, {total} ({tier}, {payment_schedule}). "
                 f"Invoice {draft.get('invoice_number') or draft['invoice_id']}. "
                 f"Say *send it* when you want it published to the customer.")
 
@@ -778,11 +817,12 @@ def _exec_invoice(customer_name, customer_email, tier, items_json, payment_sched
         return (f"Draft created, but publishing failed — {pub['error']}. "
                 f"The draft is saved (invoice {draft.get('invoice_number') or draft['invoice_id']}).")
     url = pub.get("public_url")
-    return (f"Sent ✅ — {customer_name}, {quote['total']} ({tier}, {payment_schedule})."
+    total = _money((quote.get("total_cents") or 0) + (shipping_cents or 0))
+    return (f"Sent ✅ — {customer_name}, {total} ({tier}, {payment_schedule})."
             + (f"\nPayment link: {url}" if url else ""))
 
 
-def _log_invoice_best_effort(customer_name, customer_email, tier, line_items, quote, draft, send) -> None:
+def _log_invoice_best_effort(customer_name, customer_email, tier, line_items, quote, draft, send, shipping_cents=0) -> None:
     try:
         from db.models import InvoiceLog
         from db.repository import log_invoice
@@ -795,7 +835,8 @@ def _log_invoice_best_effort(customer_name, customer_email, tier, line_items, qu
             tier_name=tier,
             line_items=line_items,
             subtotal_cents=None,
-            total_before_tax_cents=quote.get("total_cents"),
+            total_before_tax_cents=(quote.get("total_cents") or 0) + (shipping_cents or 0),
+            shipping_cents=shipping_cents or 0,
             payment_schedule=draft.get("payment_schedule"),
             payment_methods=draft.get("accepted_payment_methods") or [],
             approval="approved" if send else None,

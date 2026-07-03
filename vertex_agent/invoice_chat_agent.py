@@ -18,6 +18,12 @@ Google Chat adapter only reaches discuss() for allow-listed approvers.
 PDFs: the Google Chat adapter downloads an attached order PDF, digests it to text
 via services.pdf_service, and hands that text to discuss() as input state. The
 agent reads it, pulls out the customer + items, and stages an invoice for confirm.
+
+Memory: each turn still runs a fresh agent, but every message is keyed to its
+CASE — the Google Chat thread (vertex_agent.invoice_chat_memory) — and discuss()
+replays that case's rolling transcript above the new message. A terse follow-up
+("2023, Other tier, $30 shipping") therefore resolves against the order given
+earlier in the thread instead of arriving as a context-free fragment.
 """
 
 from __future__ import annotations
@@ -30,6 +36,7 @@ from vertex_agent.invoice_chat_actions import (
     peek_pending,
     set_current_user,
 )
+from vertex_agent.invoice_chat_memory import record_turn, render_case
 
 _CHAT_INSTRUCTION = """\
 You are the Winefornia invoicing assistant in Google Chat. Staff type questions
@@ -54,8 +61,11 @@ Act (CONFIRM-FIRST — these stage, then you stop and show the "reply yes" line)
 - stage_set_availability(product, tier, available, vintage) — make a wine
   available/unavailable for a tier.
 - stage_invoice(customer_name, customer_email, tier, items_json, payment_schedule,
-  send) — create (and optionally send) a Square invoice. Set send=true ONLY when
-  staff clearly want it SENT; otherwise it's a draft.
+  shipping_fee, send) — create (and optionally send) a Square invoice. Set
+  shipping_fee to 0 when staff say shipping is free/waived, or to the custom
+  dollar amount. If shipping is not known, ask whether it is free or the custom
+  amount before staging. Set send=true ONLY when staff clearly want it SENT;
+  otherwise it's a draft.
 
 CONFIRM-FIRST PROTOCOL (critical):
 - Every stage_* tool DOES NOT act — it returns a one-line "reply yes to confirm"
@@ -67,7 +77,9 @@ CONFIRM-FIRST PROTOCOL (critical):
   user is replying to exactly that staged action.
 - Only act when the user clearly asks you to. When they're just asking, answer.
 - Before staging an invoice, price the order so you can show the total. If an item
-  can't be priced or needs a price, ask for it — don't guess.
+  can't be priced or needs a price, ask for it — don't guess. Also confirm
+  shipping before staging: ask "free shipping, or what custom shipping amount?"
+  unless the user already provided it.
 
 ITEMS FORMAT — items_json is a JSON array; each item is
   {"product_name": str, "vintage": int|null, "quantity": number,
@@ -86,6 +98,14 @@ then do what the USER's words ask:
 - A pricing change ("set wholesale to $53") → stage the edit.
 The document is context; the user's message decides the action. If they only sent a
 doc with no clear request, ask what they want to do with it.
+
+CONVERSATION MEMORY — a "[conversation so far]" block above the newest message
+replays this thread's recent exchanges. Treat the thread as ONE conversation:
+when your previous reply asked clarifying questions, a terse follow-up ("2023",
+"Other tier", "$30 shipping") is answering exactly those questions, in order.
+Combine it with everything already given earlier in the thread (customer, contact
+info, items, quantities, discounts) and move the task forward — NEVER re-ask for a
+fact that appears anywhere in the conversation.
 
 HOW TO TALK — this is a chat message, not a report. Lead with a one-line takeaway,
 then details. Quote concrete numbers (prices, totals, tiers). Always say which
@@ -133,25 +153,48 @@ def _get_chat_agent():
     return _chat_agent
 
 
-def discuss(text: str, *, user: str = "") -> str:
-    """Run the assistant on a staff message; return its text answer. Never raises."""
+def _build_prompt(text: str, user: str, case: str) -> str:
+    """Assemble the turn's prompt: case transcript, then pending-confirm note,
+    then the new message. Each turn is a fresh, memory-less agent, so ALL
+    cross-turn context the model needs must be re-injected here."""
+    parts: list[str] = []
+    history = render_case(case)
+    if history:
+        parts.append(
+            "[conversation so far — this Chat thread]\n"
+            f"{history}\n"
+            "(The staff message below continues this conversation. Short replies "
+            "answer your latest questions above — combine them with the details "
+            "already given instead of re-asking.)"
+        )
+    pending = peek_pending(user)
+    if pending:
+        parts.append(
+            f"[pending confirmation] The user has a staged action awaiting their yes/no: "
+            f"\"{pending['summary']}\". Their message below is their reply to it."
+        )
+    parts.append(text)
+    return "\n\n".join(parts)
+
+
+def discuss(text: str, *, user: str = "", case: str = "") -> str:
+    """Run the assistant on a staff message; return its text answer. Never raises.
+
+    `case` keys the rolling conversation memory (the Chat thread — see
+    invoice_chat_memory). Pass "" to run a one-off, memory-less turn.
+    """
     try:
         import asyncio
         from google.adk.runners import InMemoryRunner
 
         _ensure_anthropic_key()
         # Identify the acting approver for this turn (audit trail + keys the
-        # per-user confirm store). Each turn is a fresh, memory-less agent, so if
-        # the user has a staged confirm-first action, re-inject it into the prompt
-        # so "yes" resolves to the right thing.
+        # per-user confirm store).
         set_current_user(user)
-        prompt = text
-        pending = peek_pending(user)
-        if pending:
-            prompt = (
-                f"[pending confirmation] The user has a staged action awaiting their yes/no: "
-                f"\"{pending['summary']}\". Their message below is their reply to it.\n\n{text}"
-            )
+        prompt = _build_prompt(text, user, case)
+        # Record the staff side up front so the context survives even if this
+        # turn errors out; the assistant side is recorded only on success.
+        record_turn(case, "staff", text)
 
         async def _run():
             return await asyncio.wait_for(
@@ -168,6 +211,8 @@ def discuss(text: str, *, user: str = "") -> str:
             for p in (c.parts or []):
                 if getattr(p, "text", None):
                     out = p.text
+        if out:
+            record_turn(case, "assistant", out)
         return out or "I couldn't work that out — try rephrasing?"
     except Exception as e:  # pragma: no cover - defensive
         return f"Sorry — I hit an error handling that: {e}"

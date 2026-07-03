@@ -1,4 +1,4 @@
-"""Natural-language command layer for the tasting room Telegram bot."""
+"""Natural-language staff command helpers for tasting-room reservations."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any
 
 
 def handle_tastingroom_chat(text: str, *, chat_id: int | str) -> str:
-    """Interpret a staff Telegram message and apply the requested operation.
+    """Interpret a staff message and apply the requested operation.
 
     External email sends still go through the same action-request controls as
     inline buttons. This layer only makes the staff control surface easier.

@@ -330,6 +330,16 @@ async def _handle_message(ev: dict, decided_by: str) -> dict:
     text = (msg.get("argumentText") or msg.get("text") or "").strip()
     sender_email = ((ev.get("user") or {}).get("email") or "").strip()
 
+    # The Chat thread identifies the CASE this message belongs to (a threadless
+    # DM falls back to space+sender), so follow-ups reach the agent with the
+    # conversation so far instead of as context-free fragments.
+    from vertex_agent.invoice_chat_memory import case_key
+    case = case_key(
+        thread=((msg.get("thread") or {}).get("name") or ""),
+        space=((ev.get("space") or {}).get("name") or ""),
+        user=sender_email,
+    )
+
     # Digest any attached / linked order PDF into the input state the agent reads
     # (uploaded Chat file, Drive attachment, or a pasted Drive link). Drive
     # downloads impersonate the sender (the file owner).
@@ -341,5 +351,5 @@ async def _handle_message(ev: dict, decided_by: str) -> dict:
         return {"text": ""}
 
     from vertex_agent.invoice_chat_agent import discuss
-    reply = await asyncio.to_thread(discuss, text, user=decided_by)
+    reply = await asyncio.to_thread(discuss, text, user=decided_by, case=case)
     return _text_resp(reply or "I couldn't work that out — try rephrasing?")

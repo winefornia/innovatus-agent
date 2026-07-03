@@ -447,9 +447,13 @@ function showEmpty() {
 // ── Interrupt detection ────────────────────────────────────────────────────
 function which(s) {
   if (!s) return null;
+  const payload = s.__interrupt__?.[0]?.value || s.__interrupt__?.[0] || null;
+  if (payload?.type === 'price_confirmation')                         return 'price_confirmation';
+  if (payload?.type === 'shipping_fee_confirmation')                   return 'shipping';
   if (s.missing_fields?.length)                                      return 'missing';
   if (s.customer && s.customer_confirmed === false)                   return 'confirm_customer';
   if (s.customer && !s.tier_name)                                    return 'tier';
+  if (s.pricing_result && s.shipping_cents == null && !s.invoice_preview) return 'shipping';
   // Only show approval when no decision has been made yet
   if (s.invoice_preview && !s.approval && !s.square_invoice_id)      return 'approval';
   if (s.square_invoice_id && !s.send_decision)                       return 'send';
@@ -489,6 +493,18 @@ function render(s) {
       ? `Tier on file: ${known}. Confirm or update pricing below:`
       : `No tier on file for ${name}. Select pricing:`);
     addTierWizard(s);
+    return;
+  }
+
+  if (ix === 'price_confirmation') {
+    const payload = s.__interrupt__?.[0]?.value || s.__interrupt__?.[0] || {};
+    addAgent(payload.question || "What price per bottle should I charge? Reply with an amount like $45.");
+    return;
+  }
+
+  if (ix === 'shipping') {
+    const payload = s.__interrupt__?.[0]?.value || s.__interrupt__?.[0] || {};
+    addAgent(payload.question || "Shipping for this Square invoice? Reply 'free' to waive it, or enter a custom amount like $30.");
     return;
   }
 
@@ -604,6 +620,7 @@ function addCard(s) {
       </table>
       <div class="trow"><span>Subtotal</span><span>${$$(pr.subtotal_cents)}</span></div>
       ${disc > 0 ? `<div class="trow"><span>Discount</span><span class="disc">−${$$(disc)}</span></div>` : ''}
+      <div class="trow"><span>Wine total</span><span>${$$(pr.wine_total_cents || pr.total_before_tax_cents)}</span></div>
       <div class="trow"><span>Shipping</span><span>${ship === 0 ? 'Waived' : ship == null ? 'TBD' : $$(ship)}</span></div>
       <div class="trow big"><span>Total</span><span>${$$(pr.total_before_tax_cents)}</span></div>
       ${warns.length ? `<div class="card-warn">⚠ ${warns.map(esc).join('<br>')}</div>` : ''}
@@ -878,8 +895,12 @@ function submit() {
   addUser(text);
   const ix = which(agentState);
   // Active interrupts: pass text as resume decision
+  // (mirrors TEXT_INPUT_INTERRUPTS in services/invoice_interrupts.py, plus the
+  // tier/customer steps which accept either a button or a typed reply).
   // Everything else (chat, new invoice, no state): start a new agent turn
-  if (ix === 'missing' || ix === 'tier' || ix === 'confirm_customer') {
+  if (ix === 'missing' || ix === 'tier' || ix === 'confirm_customer' ||
+      ix === 'shipping' || ix === 'price_confirmation' ||
+      ix === 'edit_instruction' || ix === 'edit_clarification') {
     resume(text);
   } else {
     callRun(text);

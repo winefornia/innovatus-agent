@@ -295,6 +295,13 @@ def render(state: dict, space_id: str, *, is_card_click: bool = False) -> dict:
                         f"(e.g. 45 or $45.00) — I'll use it as-is.")
         return _text(question, is_card_click=is_card_click)
 
+    elif ix == "shipping":
+        question = payload.get("question") or (
+            "Shipping for this Square invoice?\n\n"
+            "Reply 'free' to waive it, or enter a custom amount like '$30'."
+        )
+        return _text(question, is_card_click=is_card_click)
+
     elif ix == "confirm_customer":
         c = state.get("customer", {})
         name = c.get("full_name") or c.get("company") or "Unknown"
@@ -330,6 +337,7 @@ def render(state: dict, space_id: str, *, is_card_click: bool = False) -> dict:
         ship_cents = pr.get("shipping_cents")
         ship_str   = ("Waived" if ship_cents == 0
                       else ("TBD" if ship_cents is None else f"${ship_cents/100:.2f}"))
+        wine_total = (pr.get("wine_total_cents") or pr.get("total_before_tax_cents") or 0) / 100
         total = (pr.get("total_before_tax_cents") or 0) / 100
         body  = "\n".join(lines) or "  (no items)"
         disc_line = f"\n  Discount: -${disc_cents/100:.2f}" if disc_cents > 0 else ""
@@ -338,6 +346,7 @@ def render(state: dict, space_id: str, *, is_card_click: bool = False) -> dict:
             f"Tier: {tier}  |  Due: {sched}\n\n"
             f"{body}\n"
             f"{disc_line}"
+            f"\n  Wine total: ${wine_total:.2f}"
             f"\n  Shipping: {ship_str}"
             f"\n  Total: ${total:.2f}\n\n"
             "Create this draft in Square?"

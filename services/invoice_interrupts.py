@@ -23,6 +23,7 @@ _INTERRUPT_TYPE_MAP: dict[str, str] = {
     "confirm_customer":              "confirm_customer",
     "tier_and_payment_confirmation": "tier",
     "price_confirmation":            "price_confirmation",
+    "shipping_fee_confirmation":      "shipping",
     "invoice_approval_required":     "approval",
     "confirm_send_to_client":        "send",
     "offer_email_receipt":           "email",
@@ -33,7 +34,7 @@ _INTERRUPT_TYPE_MAP: dict[str, str] = {
 # Interrupts answered by a typed text reply (vs. a button/card click). Adapters
 # resume these with the raw message text.
 TEXT_INPUT_INTERRUPTS = frozenset(
-    {"missing", "edit_instruction", "edit_clarification", "price_confirmation"}
+    {"missing", "edit_instruction", "edit_clarification", "price_confirmation", "shipping"}
 )
 
 
@@ -88,6 +89,8 @@ def _infer_from_state(state: dict | None) -> str | None:
         return "tier"
     if state.get("awaiting_price") and not state.get("invoice_preview"):
         return "price_confirmation"
+    if state.get("pricing_result") and state.get("shipping_cents") is None and not state.get("invoice_preview"):
+        return "shipping"
     if state.get("approval") == "edit_requested" and state.get("invoice_preview"):
         return "edit_instruction"
     if (

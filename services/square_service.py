@@ -108,7 +108,13 @@ SCHEDULE_TO_DAYS = {
 }
 
 
-def create_order(customer_name: str, line_items: list[dict], location_id: Optional[str] = None, idempotency_key: str = "") -> dict:
+def create_order(
+    customer_name: str,
+    line_items: list[dict],
+    location_id: Optional[str] = None,
+    idempotency_key: str = "",
+    shipping_cents: int | None = None,
+) -> dict:
     """Create a Square order (OPEN state) from priced line items.
 
     line_items: list of dicts with product_name, quantity, unit_type,
@@ -139,6 +145,16 @@ def create_order(customer_name: str, line_items: list[dict], location_id: Option
             "quantity": str(total_bottles),
             "base_price_money": {
                 "amount": item["final_unit_price_cents"],
+                "currency": "USD",
+            },
+        })
+
+    if shipping_cents:
+        sq_line_items.append({
+            "name": "Shipping",
+            "quantity": "1",
+            "base_price_money": {
+                "amount": int(shipping_cents),
                 "currency": "USD",
             },
         })
