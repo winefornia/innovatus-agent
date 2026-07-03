@@ -165,21 +165,29 @@ class TestStageInvoice:
     def test_needs_price_blocks_staging(self, mocker):
         mocker.patch.object(ica, "_quote", return_value={**self._GOOD_QUOTE,
                             "needs_price": [{"label": "Cab Sauv (shiners) 2021"}]})
-        out = ica.stage_invoice("Acme", "a@acme.com", "Wholesale", "[]", "NET_30", False)
+        out = ica.stage_invoice("Acme", "a@acme.com", "Wholesale", "[]", "NET_30", 0, False)
         assert "need a price" in out.lower()
         assert ica.peek_pending(ica._user()) is None
 
     def test_missing_email_blocks_staging(self, mocker):
         mocker.patch.object(ica, "_quote", return_value=self._GOOD_QUOTE)
-        out = ica.stage_invoice("Acme", "", "Wholesale", "[]", "NET_30", False)
+        out = ica.stage_invoice("Acme", "", "Wholesale", "[]", "NET_30", 0, False)
         assert "email" in out.lower()
+        assert ica.peek_pending(ica._user()) is None
+
+    def test_missing_shipping_blocks_staging(self, mocker):
+        mocker.patch.object(ica, "_quote", return_value=self._GOOD_QUOTE)
+        out = ica.stage_invoice("Acme", "a@acme.com", "Wholesale", "[]", "NET_30")
+        assert "shipping" in out.lower()
+        assert "free" in out.lower()
         assert ica.peek_pending(ica._user()) is None
 
     def test_stage_normalizes_schedule_and_adds_idem(self, mocker):
         mocker.patch.object(ica, "_quote", return_value=self._GOOD_QUOTE)
-        ica.stage_invoice("Acme", "a@acme.com", "Wholesale", "[]", "net 30", True)
+        ica.stage_invoice("Acme", "a@acme.com", "Wholesale", "[]", "net 30", 30, True)
         params = ica.peek_pending(ica._user())["params"]
         assert params["payment_schedule"] == "NET_30"
+        assert params["shipping_cents"] == 3000
         assert params["send"] is True
         assert len(params["idem"]) >= 16
 
@@ -196,12 +204,13 @@ class TestStageInvoice:
                            return_value={"status": "published", "public_url": "https://sq/inv"})
         mocker.patch.object(ica, "_log_invoice_best_effort")
 
-        ica.stage_invoice("Acme", "a@acme.com", "Wholesale", "[]", "NET_30", True)
+        ica.stage_invoice("Acme", "a@acme.com", "Wholesale", "[]", "NET_30", 30, True)
         out = ica.confirm_pending_action()
 
         # all four Square calls carry a deterministic idempotency key
         assert cust.call_args.kwargs["idempotency_key"]
         assert order.call_args.kwargs["idempotency_key"]
+        assert order.call_args.kwargs["shipping_cents"] == 3000
         assert draft.call_args.kwargs["idempotency_key"]
         assert pub.call_args.kwargs["idempotency_key"]
         assert "sent" in out.lower()

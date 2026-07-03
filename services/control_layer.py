@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -147,21 +146,9 @@ class ControlLayer:
         """Surface a control-layer persistence/observability failure.
 
         Previously these were swallowed at logging.debug, making DB/connectivity
-        problems invisible. Now they log at WARNING with structured context and,
-        if an admin Telegram chat is configured, push a one-line alert.
+        problems invisible. Now they log at WARNING with structured context.
         """
         logging.warning("[control] %s (case=%s): %r", what, case_id, exc)
-        chat_id = os.getenv("TELEGRAM_ADMIN_CHAT_ID", "").strip()
-        if not chat_id:
-            return
-        try:
-            from services.telegram_service import send_message
-            send_message(
-                int(chat_id),
-                f"⚠️ control-layer error: {what} (case={case_id[:8]}): {exc}",
-            )
-        except Exception:
-            pass  # alerting must never crash the agent
 
     def _new_id(self) -> str:
         return uuid.uuid4().hex

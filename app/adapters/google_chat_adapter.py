@@ -1,9 +1,9 @@
 """
 Google Chat adapter for Winefornia Invoice Agent.
 
-Mirrors bot.py (Telegram) but speaks Google Chat's event/response format.
+The Google Chat front-end for the deterministic invoice wizard.
 Google Chat is the UI surface only — the invoice graph, DB, and all
-business logic are identical to the Telegram path.
+business logic live in the shared gateway/graph path.
 
 Event flow:
   POST /webhooks/google-chat
@@ -295,6 +295,13 @@ def render(state: dict, space_id: str, *, is_card_click: bool = False) -> dict:
                         f"(e.g. 45 or $45.00) — I'll use it as-is.")
         return _text(question, is_card_click=is_card_click)
 
+    elif ix == "shipping":
+        question = payload.get("question") or (
+            "Shipping for this Square invoice?\n\n"
+            "Reply 'free' to waive it, or enter a custom amount like '$30'."
+        )
+        return _text(question, is_card_click=is_card_click)
+
     elif ix == "confirm_customer":
         c = state.get("customer", {})
         name = c.get("full_name") or c.get("company") or "Unknown"
@@ -330,6 +337,7 @@ def render(state: dict, space_id: str, *, is_card_click: bool = False) -> dict:
         ship_cents = pr.get("shipping_cents")
         ship_str   = ("Waived" if ship_cents == 0
                       else ("TBD" if ship_cents is None else f"${ship_cents/100:.2f}"))
+        wine_total = (pr.get("wine_total_cents") or pr.get("total_before_tax_cents") or 0) / 100
         total = (pr.get("total_before_tax_cents") or 0) / 100
         body  = "\n".join(lines) or "  (no items)"
         disc_line = f"\n  Discount: -${disc_cents/100:.2f}" if disc_cents > 0 else ""
@@ -338,6 +346,7 @@ def render(state: dict, space_id: str, *, is_card_click: bool = False) -> dict:
             f"Tier: {tier}  |  Due: {sched}\n\n"
             f"{body}\n"
             f"{disc_line}"
+            f"\n  Wine total: ${wine_total:.2f}"
             f"\n  Shipping: {ship_str}"
             f"\n  Total: ${total:.2f}\n\n"
             "Create this draft in Square?"
@@ -765,7 +774,7 @@ async def _handle_message(event: dict, space_id: str, thread_id: str, config: di
     await asyncio.to_thread(_reset_thread, thread_id)
 
     # Start fresh through the gateway so guardrails, control-layer traces, and
-    # workflow records match the Telegram/API paths.
+    # workflow records match the API paths.
     log.info("[gc:message] new run space=%s text=%r", space_id, text[:80])
     try:
         result = await asyncio.to_thread(

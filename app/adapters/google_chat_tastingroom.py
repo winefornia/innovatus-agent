@@ -1,11 +1,10 @@
 """
 Google Chat adapter for the Tasting Room approval flow.
 
-This is the Google Chat counterpart to the (now-removed) Telegram tasting-room
-bot. Unlike the invoice adapter (a synchronous, interrupt-driven wizard), the
-tasting-room flow is OUTBOUND-initiated: case_desk_graph creates a
-ReservationActionRequest, we post an approval card to a Chat space, a human taps
-a button, and the click resumes the channel-agnostic
+Unlike the invoice adapter (a synchronous, interrupt-driven wizard), the
+tasting-room flow is OUTBOUND-initiated: the reservation coordinator creates a
+ReservationActionRequest, this adapter posts an approval card to a Chat space, a
+human taps a button, and the click resumes the channel-agnostic
 services.tastingroom_service.process_action_decision().
 
 It runs as a SEPARATE Google Chat app (its own GCP project → its own bot identity)
@@ -13,7 +12,7 @@ served from a dedicated route on this same server: /webhooks/google-chat/tasting
 Everything here is config-gated on GOOGLE_CHAT_TR_SPACE, so when it is unset no
 approval card is pushed (the action is still persisted and visible via /status).
 
-Button scheme: each button's action carries the same callback string the Telegram
+Button scheme: each button's action carries the same callback string the original
 path used — "tr:{action_id}:{decision}" — so _rows_for_action() is reused verbatim.
 
 Production hardening (lifted from google_chat_adapter.py, learned the hard way):

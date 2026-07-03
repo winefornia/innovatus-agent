@@ -1,7 +1,7 @@
 # Tasting-room coordinator — Vertex ADK migration
 
-Goal-driven replacement for the LangGraph pipeline (`agents/case_desk_graph.py` +
-the 26-state machine). The agent reads a case, sees the goal sub-conditions, and
+Goal-driven replacement for the legacy tasting-room LangGraph and 26-state
+machine. The agent reads a case, sees the goal sub-conditions, and
 proposes the single next action that closes the biggest gap — every
 facility/client/payment action routed through the **existing Google Chat approval
 card** (kept on purpose). Powered by **Claude**, not Gemini.
@@ -34,7 +34,7 @@ and propose one action (which posts an approval card to the Chat space).
 - [x] Goal-oriented ADK agent (this package), Claude-powered, HITL preserved.
 - [x] 3-party coordination + two case types + party priority; case type detected from the form.
 - [x] Email intake rebuilt without LangGraph (`intake.py`); watcher routes here.
-- [x] **Legacy LangGraph removed** — `case_desk_graph`, `case_judge`, `case_memory`,
+- [x] **Legacy LangGraph removed** — the case-desk graph, judge, memory,
       `safety_guards`, the 23-state machine, and graph-only scripts are deleted.
       The agent is now the SOLE tasting-room engine.
 - [x] `google-adk` + `litellm` added to `requirements.txt`.

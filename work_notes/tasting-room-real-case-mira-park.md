@@ -440,7 +440,7 @@ Agent state/action:
 
 The agent's current intended automation flow for this real case is:
 
-1. Gmail watcher finds the Squarespace form and invokes `tastingroom_graph`.
+1. Gmail watcher finds the Squarespace form and invokes the current tasting-room coordinator.
 2. `classify_and_extract` parses the form into client/date/time/party/experience facts.
 3. `match_and_update_case` creates the reservation and source-backed requested-slot claim.
 4. `persist_case_event` writes the reservation, claim, and event to Supabase.
@@ -528,10 +528,10 @@ FINAL_CONFIRMED
 ## Files In The Agent That Implement This Flow
 
 - Gmail polling: `services/tastingroom_mailbox.py`
-- LangGraph workflow: `agents/tastingroom_graph.py`
+- Tasting-room coordinator: `vertex_agent/intake.py`
 - Classification/extraction/state machine/actions: `services/tastingroom_service.py`
-- Telegram approval bot: `tastingroom_bot.py`
-- Telegram natural-language command layer: `services/tastingroom_chat_service.py`
+- Approval channel: Google Chat tasting-room app
+- Staff command helpers: `services/tastingroom_chat_service.py`
 - Persistence: `db/repository.py`
 - Tables: `db/schema.sql`
 - Historical script with this real case's Gmail IDs: `scripts/replay_mira_case.py`

@@ -15,17 +15,12 @@ SQUARE_ACCESS_TOKEN = os.getenv("SQUARE_ACCESS_TOKEN", "")
 SQUARE_LOCATION_ID = os.getenv("SQUARE_LOCATION_ID", "")
 SQUARE_ENVIRONMENT = os.getenv("SQUARE_ENVIRONMENT", "sandbox")
 
-# Telegram Bot — Invoice (FireHorse). The tasting-room approval flow no longer
-# uses Telegram; it runs entirely over Google Chat (see GOOGLE_CHAT_TR_* below).
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-
 
 def _csv_env(name: str, default: str = "") -> list[str]:
     return [value.strip() for value in os.getenv(name, default).split(",") if value.strip()]
 
 # Gmail OAuth (base64-encoded token.json; run scripts/google_auth.py to generate)
 GMAIL_TOKEN_JSON_B64 = os.getenv("GMAIL_TOKEN_JSON_B64", "")
-GMAIL_INTAKE_LABEL = os.getenv("GMAIL_INTAKE_LABEL", "To Invoice")
 GMAIL_TASTING_LABEL = os.getenv("GMAIL_TASTING_LABEL", "Tasting Requests")
 GMAIL_TASTING_SOURCE_LABELS = [
     label.strip()
@@ -59,9 +54,8 @@ GOOGLE_AUTHORIZED_ACCOUNTS = [
 # ── Tasting Room approvals over Google Chat ──────────────────────────────────
 # A SEPARATE Google Chat app (its own GCP project → its own bot identity),
 # pointed at a dedicated route on this same server. All four are config-gated:
-# when GOOGLE_CHAT_TR_SPACE is unset the Google Chat path stays dormant and
-# approvals keep flowing over Telegram, so the two channels can run in parallel
-# during cutover. See feat/tastingroom-google-chat.
+# when GOOGLE_CHAT_TR_SPACE is unset the Google Chat path stays dormant.
+# See feat/tastingroom-google-chat.
 #   GOOGLE_CHAT_TR_SPACE              e.g. "spaces/AAAA…" — where cards post
 #   GOOGLE_TASTINGROOM_SA_JSON_B64    base64 of the TR project's SA key (posting)
 #   GOOGLE_CHAT_TR_AUDIENCE           the TR webhook URL (token aud check)

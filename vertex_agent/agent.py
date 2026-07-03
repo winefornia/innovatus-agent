@@ -1,6 +1,6 @@
 """Tasting-room coordinator — an ADK agent powered by Claude.
 
-This is the goal-driven replacement for agents/case_desk_graph.py. There is no
+This is the goal-driven replacement for the legacy tasting-room LangGraph. There is no
 state machine: the agent reads the case, sees the goal sub-conditions, and
 proposes the single next action that closes the biggest gap — every
 facility/client/payment action routed through the human-approval card.

@@ -946,7 +946,9 @@ def draft_for_action(reservation: Reservation, action: str) -> dict[str, str]:
             f"Hi {client_name},\n\n"
             "Wonderful. I have your reservation tentatively booked and held for you.\n\n"
             "For visits, we require prepayment to confirm the reservation and finalize the booking. "
-            "I will send the invoice link separately once it is ready. Once the invoice is paid, "
+            "Please use the Square payment link below to complete prepayment:\n"
+            "{{SQUARE_INVOICE_URL}}\n\n"
+            "Once the invoice is paid, "
             "your reservation will be confirmed and completed.\n\n"
             "Please let me know if you have any questions. We look forward to your visit.\n\n"
             "Cheers,\nAudrey\n\nINNOVATUS Wine\nwww.innovatuswine.com"
@@ -1024,6 +1026,155 @@ def _llm_refine_draft(reservation: Reservation, action: str, draft: dict[str, st
     except Exception as exc:
         logging.debug("[tastingroom] draft refinement skipped: %s", exc)
         return draft
+
+
+def _tasting_invoice_line(reservation: dict) -> dict:
+    guests = int(reservation.get("guest_count") or 0)
+    if guests <= 0:
+        raise RuntimeError("Cannot create Square invoice: guest count is missing.")
+    price = reservation.get("price_per_person_cents")
+    if not price:
+        price = parse_price_cents(reservation.get("experience_type"))
+    if not price:
+        raise RuntimeError("Cannot create Square invoice: price per person is missing.")
+    experience = reservation.get("experience_type") or "Innovatus tasting"
+    return {
+        "product_name": experience,
+        "display_name": f"{experience} ({guests} guest{'s' if guests != 1 else ''})",
+        "quantity": guests,
+        "unit_type": "guest",
+        "final_unit_price_cents": int(price),
+        "bottles_per_case": 1,
+    }
+
+
+def _ensure_square_invoice(reservation_id: str, reservation: Optional[dict]) -> dict:
+    """Create/publish the tasting-room Square invoice and persist its IDs.
+
+    Uses the same Square service primitives as the invoice pipeline. Idempotency
+    keys are deterministic by reservation_id, so a retry cannot create duplicate
+    Square objects.
+    """
+    from db.repository import insert_reservation_event, update_reservation
+    from services import square_service
+
+    r = dict(reservation or {})
+    if r.get("square_invoice_id") and r.get("square_invoice_url"):
+        return {
+            "square_customer_id": r.get("square_customer_id"),
+            "square_order_id": r.get("square_order_id"),
+            "square_invoice_id": r.get("square_invoice_id"),
+            "square_invoice_number": r.get("square_invoice_number"),
+            "square_invoice_url": r.get("square_invoice_url"),
+            "square_invoice_total_cents": r.get("square_invoice_total_cents"),
+            "square_invoice_status": r.get("square_invoice_status"),
+            "square_invoice_verified_at": r.get("square_invoice_verified_at"),
+            "reused": True,
+        }
+    email = (r.get("client_email") or "").strip()
+    if not email:
+        raise RuntimeError("Cannot create Square invoice: client email is missing.")
+
+    customer_name = r.get("client_name") or "Tasting guest"
+    customer = square_service.get_or_create_square_customer(
+        email,
+        customer_name,
+        idempotency_key=square_service._ikey(reservation_id, "tr_customer"),
+    )
+    if customer.get("error"):
+        raise RuntimeError(f"Square customer failed: {customer['error']}")
+
+    line = _tasting_invoice_line(r)
+    order = square_service.create_order(
+        customer_name,
+        [line],
+        idempotency_key=square_service._ikey(reservation_id, "tr_order"),
+    )
+    if order.get("error"):
+        raise RuntimeError(f"Square order failed: {order['error']}")
+
+    title = f"Innovatus tasting reservation - {customer_name}"
+    message = (
+        f"Prepayment for tasting reservation {reservation_id}. "
+        f"{r.get('requested_date') or ''} {r.get('requested_time') or ''}".strip()
+    )
+    draft = square_service.create_invoice_draft(
+        order["order_id"],
+        customer["customer_id"],
+        title=title[:180],
+        message=message,
+        payment_schedule="UPON_RECEIPT",
+        idempotency_key=square_service._ikey(reservation_id, "tr_invoice_draft"),
+    )
+    if draft.get("error"):
+        raise RuntimeError(f"Square invoice draft failed: {draft['error']}")
+
+    published = square_service.publish_invoice(
+        draft["invoice_id"],
+        draft.get("invoice_version", 0),
+        idempotency_key=square_service._ikey(reservation_id, "tr_invoice_publish"),
+    )
+    if published.get("error"):
+        raise RuntimeError(f"Square invoice publish failed: {published['error']}")
+    verified = square_service.verify_invoice(
+        published.get("invoice_id") or draft["invoice_id"],
+        expected_order_id=order["order_id"],
+        expected_customer_id=customer["customer_id"],
+        title_contains="Innovatus tasting reservation",
+        require_public_url=True,
+    )
+    if not verified.get("ok"):
+        raise RuntimeError(f"Square invoice verification failed: {verified.get('error')}")
+    invoice_url = verified.get("public_url") or published.get("public_url")
+
+    total_cents = ((order.get("total_money") or {}).get("amount"))
+    fields = {
+        "square_customer_id": customer["customer_id"],
+        "square_order_id": order["order_id"],
+        "square_invoice_id": verified.get("invoice_id") or published.get("invoice_id") or draft["invoice_id"],
+        "square_invoice_number": verified.get("invoice_number") or draft.get("invoice_number"),
+        "square_invoice_url": invoice_url,
+        "square_invoice_total_cents": verified.get("total_money_cents") or total_cents,
+        "square_invoice_status": verified.get("status"),
+        "square_invoice_verified_at": datetime.utcnow().isoformat(),
+        "payment_status": "sent",
+    }
+    update_reservation(reservation_id, **fields)
+    insert_reservation_event(ReservationEvent(
+        reservation_id=reservation_id,
+        event_type="square_invoice_created",
+        actor="square",
+        source_channel="square",
+        summary=f"Created Square invoice {fields['square_invoice_id']}",
+        raw_payload={
+            "customer": customer,
+            "order": order,
+            "draft": draft,
+            "published": published,
+            "verified": verified,
+            "fields": fields,
+        },
+    ))
+    return fields
+
+
+def _insert_square_invoice_link(body: str, invoice: dict) -> str:
+    url = invoice.get("square_invoice_url") or ""
+    if not url:
+        return body
+    if "{{SQUARE_INVOICE_URL}}" in body:
+        return body.replace("{{SQUARE_INVOICE_URL}}", url)
+    return f"{body.rstrip()}\n\nSquare payment link: {url}"
+
+
+def _append_calendar_note(body: str, calendar: dict | None) -> str:
+    if not calendar:
+        return body
+    link = calendar.get("html_link") or calendar.get("calendar_event_url") or ""
+    note = "A calendar invitation has also been sent to Winefornia, the guest, and Josh."
+    if link:
+        note += f"\nCalendar event: {link}"
+    return f"{body.rstrip()}\n\n{note}"
 
 
 def _guest_line(reservation: Reservation) -> str:
@@ -1185,7 +1336,7 @@ def create_action_request(reservation: Reservation, action: str, source_message_
     return action_id
 
 
-def process_action_decision(action_id: str, decision: str, decided_by: str = "telegram") -> dict[str, Any]:
+def process_action_decision(action_id: str, decision: str, decided_by: str = "google_chat") -> dict[str, Any]:
     from db.repository import (
         get_reservation_action,
         get_reservation,
@@ -1245,9 +1396,28 @@ def process_action_decision(action_id: str, decision: str, decided_by: str = "te
     if decision != "approve":
         return {"ok": False, "error": "Unknown tasting room action decision."}
 
+    if action_type == "send_final_confirmation" and (reservation or {}).get("payment_status") != "paid":
+        return {
+            "ok": False,
+            "error": "Payment must be marked paid before final confirmation.",
+            "reservation_id": reservation_id,
+        }
+
     update_reservation_action(action_id, status="approved", decided_by=decided_by, decided_at=now)
     try:
         from services.gmail_service import send_email
+
+        square_invoice = None
+        calendar_event = None
+        email_body = action.get("email_body") or ""
+        if action_type == "send_tentative_invoice":
+            square_invoice = _ensure_square_invoice(reservation_id, reservation or get_reservation(reservation_id))
+            email_body = _insert_square_invoice_link(email_body, square_invoice)
+            update_reservation_action(action_id, email_body=email_body)
+        elif action_type == "send_final_confirmation":
+            calendar_event = _send_calendar_invites(reservation_id, reservation or get_reservation(reservation_id))
+            email_body = _append_calendar_note(email_body, calendar_event)
+            update_reservation_action(action_id, email_body=email_body)
 
         intended_recipient = action.get("recipient_email") or ""
         actual_recipient = intended_recipient
@@ -1259,8 +1429,8 @@ def process_action_decision(action_id: str, decision: str, decided_by: str = "te
         send_result = send_email(
             to=actual_recipient,
             subject=action.get("email_subject") or "",
-            html=(action.get("email_body") or "").replace("\n", "<br>"),
-            plain=action.get("email_body") or "",
+            html=email_body.replace("\n", "<br>"),
+            plain=email_body,
         )
         if send_result.get("message_id") and not send_result.get("dry_run"):
             try:
@@ -1294,14 +1464,11 @@ def process_action_decision(action_id: str, decision: str, decided_by: str = "te
             except Exception as exc:
                 logging.warning("[tastingroom] could not record outbound thread %s: %s", sent_thread, exc)
         _apply_post_send_state(action, reservation, safe_actual_recipient=actual_recipient, send_result=send_result)
-        # END STATE: on final confirmation, invite all 3 parties to the visit.
-        if action_type == "send_final_confirmation":
-            _send_calendar_invites(reservation_id, reservation or get_reservation(reservation_id))
         insert_reservation_event(ReservationEvent(
             reservation_id=reservation_id,
             event_type="approved_email_sent",
             actor=decided_by,
-            source_channel="telegram",
+            source_channel="google_chat",
             source_message_id=action_id,
             summary=f"Sent {action_type} to {actual_recipient}",
             raw_payload={
@@ -1310,6 +1477,8 @@ def process_action_decision(action_id: str, decision: str, decided_by: str = "te
                 "safe_mode": TASTINGROOM_SAFE_MODE,
                 "intended_recipient": intended_recipient,
                 "actual_recipient": actual_recipient,
+                "square_invoice": square_invoice,
+                "calendar_event": calendar_event,
             },
         ))
         updated = get_reservation(reservation_id)
@@ -1342,6 +1511,16 @@ def _reservation_from_row(row: dict) -> Reservation:
         current_state=row.get("current_state") or "REQUEST_RECEIVED",
         payment_status=row.get("payment_status") or "not_sent",
         booking_status=row.get("booking_status") or "not_booked",
+        square_customer_id=row.get("square_customer_id"),
+        square_order_id=row.get("square_order_id"),
+        square_invoice_id=row.get("square_invoice_id"),
+        square_invoice_number=row.get("square_invoice_number"),
+        square_invoice_url=row.get("square_invoice_url"),
+        square_invoice_total_cents=row.get("square_invoice_total_cents"),
+        square_invoice_status=row.get("square_invoice_status"),
+        square_invoice_verified_at=row.get("square_invoice_verified_at"),
+        calendar_event_id=row.get("calendar_event_id"),
+        calendar_event_url=row.get("calendar_event_url"),
         gmail_thread_ids=row.get("gmail_thread_ids") or [],
         active_slot=row.get("active_slot") or {},
         candidate_slots=row.get("candidate_slots") or [],
@@ -1377,7 +1556,7 @@ def _apply_post_send_state(
         update_reservation(
             reservation_id,
             current_state="WAITING_FOR_PAYMENT",
-            payment_status="awaiting_invoice_marker",
+            payment_status="sent",
             booking_status="tentative",
             recommended_action="review_payment_status",
             **extra,
@@ -1393,31 +1572,54 @@ def _apply_post_send_state(
         )
 
 
-def _send_calendar_invites(reservation_id: str, reservation: Optional[dict]) -> None:
+def _send_calendar_invites(reservation_id: str, reservation: Optional[dict]) -> dict:
     """End state: invite Winefornia (Lisa), the customer, and Josh to the confirmed
-    visit — all three, even for a standard tasting. In safe mode only the test
-    address is invited. Best-effort; never blocks the confirmation."""
-    try:
-        from services.calendar_service import create_tasting_event
-        r = reservation or {}
-        name = r.get("client_name") or "guest"
-        exp = r.get("experience_type") or "Tasting"
-        if TASTINGROOM_SAFE_MODE:
-            attendees = [TASTINGROOM_TEST_RECIPIENT]
-        else:
-            lisa = os.getenv("GOOGLE_DELEGATED_USER_EMAIL") or os.getenv("GOOGLE_ACCOUNT_EMAIL") or ""
-            attendees = [lisa, r.get("client_email") or "", JOSH_EMAIL]
-        create_tasting_event(
-            reservation_id=reservation_id,
-            summary=f"Winefornia Tasting — {name} ({exp})",
-            date_str=r.get("requested_date"),
-            time_str=r.get("requested_time"),
-            attendees=attendees,
-            description=f"Tasting-room visit for {name}. Case {reservation_id}.",
-            location="The Caves at Soda Canyon",
-        )
-    except Exception as exc:
-        logging.warning("[tastingroom] calendar invite failed for %s: %s", reservation_id, exc)
+    visit — all three, even for a standard tasting. Raises on failure so final
+    confirmation cannot advance without the calendar invite."""
+    from db.repository import insert_reservation_event, update_reservation
+    from services.calendar_service import create_tasting_event
+
+    r = reservation or {}
+    if r.get("calendar_event_id") and r.get("calendar_event_url"):
+        return {
+            "event_id": r.get("calendar_event_id"),
+            "html_link": r.get("calendar_event_url"),
+            "reused": True,
+        }
+    name = r.get("client_name") or "guest"
+    exp = r.get("experience_type") or "Tasting"
+    if TASTINGROOM_SAFE_MODE:
+        if not TASTINGROOM_TEST_RECIPIENT:
+            raise RuntimeError("TASTINGROOM_SAFE_MODE is enabled but TASTINGROOM_TEST_RECIPIENT is not set.")
+        attendees = [TASTINGROOM_TEST_RECIPIENT]
+    else:
+        lisa = os.getenv("GOOGLE_DELEGATED_USER_EMAIL") or os.getenv("GOOGLE_ACCOUNT_EMAIL") or ""
+        attendees = [lisa, r.get("client_email") or "", JOSH_EMAIL]
+    result = create_tasting_event(
+        reservation_id=reservation_id,
+        summary=f"Winefornia Tasting - {name} ({exp})",
+        date_str=r.get("requested_date"),
+        time_str=r.get("requested_time"),
+        attendees=attendees,
+        description=f"Tasting-room visit for {name}. Case {reservation_id}.",
+        location="The Caves at Soda Canyon",
+    )
+    if not result or not result.get("html_link"):
+        raise RuntimeError("Calendar invite failed or returned no event link.")
+    update_reservation(
+        reservation_id,
+        calendar_event_id=result.get("event_id"),
+        calendar_event_url=result.get("html_link"),
+    )
+    insert_reservation_event(ReservationEvent(
+        reservation_id=reservation_id,
+        event_type="calendar_invite_created",
+        actor="google_calendar",
+        source_channel="calendar",
+        summary=f"Created calendar invite {result.get('event_id')}",
+        raw_payload=result,
+    ))
+    return result
 
 
 def _process_stale_followup_decision(*, action, reservation, decision, decided_by, decided_at):
@@ -1482,7 +1684,7 @@ def _process_internal_availability_decision(
         start_time=(reservation or {}).get("requested_time"),
         guest_count=(reservation or {}).get("guest_count"),
         experience_type=(reservation or {}).get("experience_type"),
-        source_channel="telegram",
+        source_channel="google_chat",
         source_message_id=action["action_id"],
         raw_text=decision,
         confidence=1.0,
@@ -1525,7 +1727,7 @@ def _process_internal_availability_decision(
         reservation_id=reservation_id,
         event_type="internal_availability_marked",
         actor=decided_by,
-        source_channel="telegram",
+        source_channel="google_chat",
         source_message_id=action["action_id"],
         summary=f"Internal availability marked: {status}",
         raw_payload={"decision": decision, "action": action},
@@ -1596,7 +1798,7 @@ def _process_payment_decision(
         reservation_id=reservation_id,
         event_type="payment_status_marked",
         actor=decided_by,
-        source_channel="telegram",
+        source_channel="google_chat",
         source_message_id=action["action_id"],
         summary=f"Payment action: {status}",
         raw_payload={"decision": decision, "action": action},

@@ -10,8 +10,8 @@ A two-part document:
 
 An AI operations agent for **Winefornia / Innovatus Wine**. It runs two distinct workflows on a shared infrastructure:
 
-1. **Invoice Agent** — Staff (Cecil/Audrey) forward a raw order (Telegram text, email, or PDF); the agent extracts details, looks up the customer, prices the order by tier, asks for approval, and creates a **Square invoice draft**. Nothing is ever sent to a client without an explicit human tap.
-2. **Tasting Room Agent** — Reservation emails (Squarespace forms, client replies, facility coordinator threads) are ingested from Gmail, reasoned over by an LLM "judgment" layer, and surfaced to staff via Telegram with approve/reject buttons. On approval, the agent replies by email.
+1. **Invoice Agent** — Staff (Cecil/Audrey) forward a raw order (Google Chat message, email, or PDF); the agent extracts details, looks up the customer, prices the order by tier, asks for approval, and creates a **Square invoice draft**. Nothing is ever sent to a client without an explicit human tap.
+2. **Tasting Room Agent** — Reservation emails (Squarespace forms, client replies, facility coordinator threads) are ingested from Gmail, reasoned over by an LLM "judgment" layer, and surfaced to staff via Google Chat with approve/reject buttons. On approval, the agent replies by email.
 
 Both share one core design philosophy: **a deterministic brain owns every real-world action; the LLM is a sidecar** used only for extraction, clarifying questions, fuzzy matching, and judgment — never for routing or executing actions unsupervised.
 
@@ -25,10 +25,9 @@ Both share one core design philosophy: **a deterministic brain owns every real-w
                          STAFF (Cecil / Audrey / Lisa)
                                      │
         ┌────────────────┬──────────┴──────────┬─────────────────┐
-   Telegram bots    Google Chat            Email / Gmail        HTTP API
-   (bot.py,         (adapter)              (webhooks, pollers)  (/intake, /intake/pdf)
-    tastingroom_bot)     │                      │                    │
-        └────────────────┴──────────┬──────────┴────────────────────┘
+        Google Chat (invoice wizard + assistants)    Gmail (tasting room)
+        (adapters)                                   (poller)
+        └────────────────────────────┬───────────────────────────────┘
                                      ▼
                       Gateway  (services/gateway.py)
                       → normalizes every channel to NormalizedMessage
@@ -40,13 +39,13 @@ Both share one core design philosophy: **a deterministic brain owns every real-w
                                      │
               ┌──────────────────────┴───────────────────────┐
               ▼                                               ▼
-   INVOICE GRAPH (LangGraph)                    CASE-DESK GRAPH (LangGraph)
-   deterministic state machine                 evidence + LLM judgment
-   agents/invoice_graph.py                      agents/case_desk_graph.py
+   INVOICE GRAPH (LangGraph)                    TASTING-ROOM COORDINATOR
+   deterministic state machine                 Gmail watcher + goal model
+   agents/invoice_graph.py                      vertex_agent/intake.py
               │                                               │
    ┌──────────┴──────────┐                       ┌────────────┴───────────┐
-   Tool Registry      Hook Bus              Case Memory / Judge      Safety Guards
-   Skill Memory       Interrupts            (Claude Sonnet)
+   Tool Registry      Hook Bus              Gmail / Chat Approval    Supabase State
+   Skill Memory       Interrupts            (Claude-powered)
               │                                               │
               └──────────────────────┬────────────────────────┘
                                      ▼
@@ -58,12 +57,10 @@ Both share one core design philosophy: **a deterministic brain owns every real-w
 - **LLM is a sidecar.** Claude is called only for extraction, clarifying questions, fuzzy-match hints, edit parsing, and case judgment.
 - **Learning brain accumulates context.** Mem0 stores per-operator skill facts; Supabase invoice history resolves "same as last time" references.
 
-### Runtime processes (Fly.io / supervisord)
+### Runtime processes (Fly.io)
 | Process | Command | Purpose |
 |---|---|---|
 | `web` | `uvicorn app.main:app` | FastAPI HTTP endpoints + activity page |
-| `bot` | `python bot.py` | Telegram invoice bot (long polling) |
-| `tastingroom_bot` | `python tastingroom_bot.py` | Telegram tasting room bot (approval callbacks) |
 | `tastingroom_watcher` | `python scripts/tastingroom_mail_watcher.py` | Gmail poller for reservation emails |
 
 ---
@@ -74,8 +71,6 @@ Both share one core design philosophy: **a deterministic brain owns every real-w
 | Module | Role |
 |---|---|
 | `invoice_graph.py` | **Main invoice workflow.** Deterministic ~18-node state machine: classify intent → extract fields → resolve customer → confirm tier/payment → price → preview → approval gate → create Square draft → confirm send → offer receipt. Multiple human **interrupts**; Claude Haiku used only as extraction/edit-parsing sidecar. Checkpointed to PostgreSQL (Supabase). Max 2 edit rounds. |
-| `case_desk_graph.py` | **Current tasting room workflow.** 9-node evidence-and-judgment pipeline: store raw email → extract claims → resolve case → persist claims → build case bundle → **judge (Claude Sonnet)** → save judgment → update reservation cache → validate & create action request. State is *derived from LLM judgment*, not hardcoded routing. |
-| `tastingroom_graph.py` | Legacy/simpler tasting room graph (no judgment phase; deterministic `apply_state`). Used in smoke tests. |
 | `supervisor_graph.py` | Stateless intent router. Keyword fast-path for short messages, Claude Haiku for longer ones; routes to invoice vs tasting room agent. Each agent keeps a separate Mem0 namespace. |
 | `router.py` | Legacy router, superseded by `supervisor_graph.py`; kept for backward compatibility. |
 
@@ -96,20 +91,17 @@ Both share one core design philosophy: **a deterministic brain owns every real-w
 **Tasting room domain**
 | Module | Role |
 |---|---|
-| `tastingroom_service.py` | Core reservation logic: email classification, fact extraction, 26-state machine, availability claims, slot matching, LLM draft refinement. |
-| `tastingroom_mailbox.py` | Gmail ingestion: candidate filtering (Squarespace forms, facility emails), dedup, thread continuity, label management, routes to `case_desk_graph`. |
-| `tastingroom_chat_service.py` | Natural-language command layer for the tasting room Telegram bot (list pending, show case, mark invoice/payment, escalate, revise draft). |
-| `case_memory.py` | Assembles the full `CaseBundle` from DB for LLM reasoning. |
-| `case_judge.py` | **Judgment engine.** Claude Sonnet reads a CaseBundle → structured `CaseJudgment` (current truth, blockers, confidence, next-best-action, interrupt level). |
-| `safety_guards.py` | Hard rules validating a CaseJudgment against current state before any action; blocks low-confidence actions, downgrades to staff review. |
+| `tastingroom_service.py` | Core reservation logic: email classification, fact extraction, reservation state persistence, availability claims, slot matching, LLM draft refinement. |
+| `tastingroom_mailbox.py` | Gmail ingestion: candidate filtering (Squarespace forms, facility emails), dedup, thread continuity, label management, routes to `vertex_agent/intake.py`. |
+| `tastingroom_chat_service.py` | Natural-language command helpers for tasting-room staff workflows (list pending, show case, mark invoice/payment, escalate, revise draft). |
+| `vertex_agent/intake.py` | Current tasting-room coordinator entry point: stores raw events, extracts facts, updates reservation state, derives gaps, and creates approval-gated action requests. |
+| `vertex_agent/goal_model.py` | Derived goal-state model for reservation readiness and next-step selection. |
 
 **Channels & messaging**
 | Module | Role |
 |---|---|
 | `gateway.py` | Channel normalization → `NormalizedMessage`; routes through invoice graph; applies guardrails; writes terminal `WorkflowRecord`. |
-| `telegram_service.py` | Telegram Bot API wrapper: messages, inline keyboards, PDF download, webhook registration. |
-| `telegram_auth.py` | Access control for tasting room bot (allowed chat IDs / user IDs). |
-| `gmail_service.py` | Gmail OAuth / service-account auth: read "To Invoice" label, manage labels, compose + send receipt emails (Claude Haiku). |
+| `gmail_service.py` | Gmail OAuth / service-account auth: mailbox reading (tasting room), label management, compose + send receipt emails (Claude Haiku). |
 
 **AI, memory & learning**
 | Module | Role |
@@ -122,17 +114,16 @@ Both share one core design philosophy: **a deterministic brain owns every real-w
 |---|---|
 | `control_layer.py` | Case lifecycle supervisor: opens a Case, traces input/intent/output/tool calls/interrupts/decisions/failures, synthesizes skills, creates eval cases from failures. |
 | `guardrail_service.py` | Deterministic (never LLM) pre/post checks: input length, prompt injection, rate limit, amount sanity, tier/schedule validation, error keys, credential-leak detection. |
-| `activity_service.py` | Formats activity for operators (Telegram history + HTML activity page) in Pacific time. |
+| `activity_service.py` | Formats activity for operators (HTML activity page, GET /activity) in Pacific time. |
 | `tool_registry.py` | Business-action router with validation, **risk labels**, hooks, and error normalization for Square/Gmail/Supabase/customer/pricing tools (plus a separate tasting-room registry). |
 
 ### `app/` — HTTP layer & static data
 | File | Role |
 |---|---|
-| `main.py` | FastAPI server: `/intake`, `/intake/pdf`, `/webhooks/email`, `/webhooks/gmail/poll`, `/webhooks/gmail/tastingroom/poll`, `/webhooks/google-chat`, `/invoices/recent`, `/reservations/recent`, `/activity`, `/health`. |
+| `main.py` | FastAPI server: `/webhooks/google-chat` (+ `/invoice-chat`, `/tastingroom`), `/webhooks/gmail/tastingroom/poll`, `/invoices/recent`, `/reservations/recent`, `/activity`, `/health`. |
 | `config.py` | Env var loader (API keys, tokens, Supabase, Mem0, safe-mode/prod flags, authorized accounts). |
 | `schemas.py` | Pydantic models: `LineItem`, `InvoiceDraft`. |
-| `adapters/google_chat_adapter.py` | Google Chat front-end mirroring the Telegram invoice bot (cards, wizards, stale-click guards). |
-| `static/index.html` | Activity dashboard stub (wine-red theme). |
+| `adapters/google_chat_adapter.py` | Google Chat front-end for the invoice wizard (cards, wizards, stale-click guards). |
 | `data/*.json` | `product_catalog.json` (SKUs + MSRP), `customers.json` (PII, gitignored), `pricing_tiers.json` (tier multipliers), `approval_log.json` (audit). |
 
 ### `db/` — Persistence & evaluation
@@ -149,9 +140,7 @@ Both share one core design philosophy: **a deterministic brain owns every real-w
 ### Entry points & operations
 | File | Role |
 |---|---|
-| `bot.py` | Telegram invoice bot (primary interface, long polling). |
-| `tastingroom_bot.py` | Telegram tasting room bot (`/start`, `/history`, `/status`, approve/reject callbacks). |
-| `cli.py` | Local CLI to drive the invoice graph through interrupts without Telegram. |
+| `cli.py` | Local CLI to drive the invoice graph through interrupts without Google Chat. |
 | `scripts/sync.py` | Weekly cursor-based Square → Supabase sync. |
 | `scripts/migrate.py` | One-time historical data migration into Supabase. |
 | `scripts/google_auth.py` | Generate Gmail OAuth token. |
@@ -162,14 +151,14 @@ Both share one core design philosophy: **a deterministic brain owns every real-w
 | `scripts/eval_tasting_room.py`, `tastingroom_e2e_smoke.py`, `tastingroom_workflow_audit.py` | Tasting room evals, smoke tests, audits. |
 
 ### Tech stack
-LangGraph · Claude API (Haiku for extraction/composition, Sonnet for judgment/patching) · FastAPI · Supabase/PostgreSQL · Square SDK · Gmail API · Telegram Bot API · Mem0 · Fly.io + supervisord · Docker.
+LangGraph · Claude API (Haiku for extraction/composition, Sonnet for judgment/patching) · FastAPI · Supabase/PostgreSQL · Square SDK · Gmail API · Mem0 · Fly.io + supervisord · Docker.
 
 ---
 
 # Part 2 — Project Manager Feature List
 
 ## A. Order & Invoice Automation (Invoice Agent)
-- **Multi-channel order intake** — accept orders from Telegram, Google Chat, forwarded email, Gmail-labeled threads, HTTP API (Zapier/n8n), and direct PDF upload. Adding a channel requires no business-logic change.
+- **Order intake via Google Chat** — typed orders, pasted emails, or PDF attachments, all through the Google Chat wizard/assistant. Gmail is used only for tasting-room intake and for sending invoice receipt emails to customers.
 - **AI order extraction** — pull customer, line items, quantities, and company from free-form text or PDFs (digital and scanned/OCR).
 - **Smart customer matching** — exact match auto-confirms; fuzzy matches surface a confirmation prompt to staff.
 - **"Same as last time" memory** — resolves vague references using invoice history and per-operator memory.
@@ -186,28 +175,28 @@ LangGraph · Claude API (Haiku for extraction/composition, Sonnet for judgment/p
 - **Reservation state tracking** — maintains each reservation's lifecycle (request → availability → counter-offers → confirmation → invoice → final confirmation) in the database.
 - **AI case judgment** — an LLM reads the full case history and proposes the next best action with a confidence score and a required approval level.
 - **Availability claim reconciliation** — tracks who claimed what slot (client, facility coordinator, internal staff) and resolves conflicts.
-- **Telegram approval workflow** — staff get notified with approve/reject/escalate buttons; approving sends the email reply automatically.
+- **Google Chat approval workflow** — staff get notified with approve/reject/escalate buttons; approving sends the email reply automatically.
 - **Natural-language staff commands** — staff can list pending cases, view a case, mark invoice/payment status, escalate, or revise a draft in plain language.
 - **Safe mode** — can route all outbound email to a test address until enabled for live sending.
 
 ## C. Safety, Guardrails & Trust
 - **Deterministic guardrails** — prompt-injection detection, rate limiting, invoice-amount sanity checks, and credential-leak prevention — all rule-based, never LLM-decided.
 - **Risk-labeled actions** — every external action carries a risk label and passes pre/post checks.
-- **Access control** — Telegram bots restricted to authorized chats/users; Google Chat restricted to an allowed email list.
+- **Access control** — Google Chat restricted to an allowed email list.
 - **Reconciliation alerts** — if Square succeeds but the database write fails, the case is flagged for manual review rather than silently lost.
 
 ## D. Observability
 - **Full audit trail** — every run opens a "case"; every LLM call, tool call, interrupt, and human decision is logged to the database.
 - **Failure labeling** — production failures are categorized by type, severity, and responsible layer for human review.
 - **Regression eval suite** — golden, edge-case, regression, and adversarial scenarios guard against regressions; production failures can become new eval cases.
-- **Activity dashboard** — operators review recent invoices and reservations via Telegram history and a web page, in Pacific time.
+- **Activity dashboard** — operators review recent invoices and reservations via the /activity web page, in Pacific time.
 
 ## E. Learning & Memory
 - **Per-operator skill memory** — accumulates facts about how each operator works.
 - **Per-agent memory isolation** — supervisor and each agent keep separate memory namespaces so context never crosses.
 
 ## F. Data, Integrations & Operations
-- **System integrations** — Square (invoicing), Gmail (intake + sending), Supabase/PostgreSQL (system of record), Mem0 (memory), Telegram & Google Chat (staff interfaces), Claude (AI).
+- **System integrations** — Square (invoicing), Gmail (intake + sending), Supabase/PostgreSQL (system of record), Mem0 (memory), Google Chat (staff interface), Claude (AI).
 - **Data sync** — scheduled Square → Supabase sync (customers, orders, invoices) with cursor-based incremental updates.
 - **Stable Gmail auth** — Google Workspace domain-wide delegation for server-side mailbox access (no fragile per-user refresh tokens).
 - **Deployment** — Fly.io with four supervised processes (web, invoice bot, tasting room bot, mail watcher); Docker-packaged; secrets via Fly.

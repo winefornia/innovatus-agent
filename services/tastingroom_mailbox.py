@@ -161,8 +161,8 @@ def process_gmail_message(message_id: str, *, labels: list[str] | None = None) -
 
     thread_id = f"tasting_{thread or message_id[:12]}"
 
-    # Goal-oriented Vertex ADK agent — the sole coordination engine (the legacy
-    # LangGraph case_desk_graph was removed). Reuses the same Gmail/Chat/Supabase
+    # Goal-oriented Vertex ADK agent — the sole coordination engine after the
+    # legacy LangGraph tasting-room path was removed. Reuses the same Gmail/Chat/Supabase
     # endpoints; the agent decides the next step and routes it through the
     # human-approval card.
     from vertex_agent.intake import coordinate_email

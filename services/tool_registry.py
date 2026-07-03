@@ -180,9 +180,20 @@ def _register_all():
         schema={"email": "str", "full_name": "str"},
     ))
 
-    def _square_create_order(customer_name: str, line_items: list, location_id: str = "", idempotency_key: str = "") -> dict:
+    def _square_create_order(
+        customer_name: str,
+        line_items: list,
+        location_id: str = "",
+        idempotency_key: str = "",
+        shipping_cents: int | None = None,
+    ) -> dict:
         from services.square_service import create_order
-        kwargs = {"customer_name": customer_name, "line_items": line_items, "idempotency_key": idempotency_key}
+        kwargs = {
+            "customer_name": customer_name,
+            "line_items": line_items,
+            "idempotency_key": idempotency_key,
+            "shipping_cents": shipping_cents,
+        }
         if location_id:
             kwargs["location_id"] = location_id
         return create_order(**kwargs)
@@ -192,7 +203,7 @@ def _register_all():
         description="Create a Square order (write, medium risk).",
         risk="medium",
         handler=_square_create_order,
-        schema={"customer_name": "str", "line_items": "list[dict]"},
+        schema={"customer_name": "str", "line_items": "list[dict]", "shipping_cents": "int|None"},
     ))
 
     def _square_create_invoice_draft(

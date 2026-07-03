@@ -1,8 +1,7 @@
 {
   "dependencies": ["."],
   "graphs": {
-    "invoice_agent": "./agents/invoice_graph.py:invoice_graph",
-    "tastingroom_agent": "./agents/case_desk_graph.py:case_desk_graph"
+    "invoice_agent": "./agents/invoice_graph.py:invoice_graph"
   },
   "env": ".env"
 }

@@ -51,6 +51,16 @@ class Reservation:
     current_state: str = "REQUEST_RECEIVED"
     payment_status: str = "not_sent"
     booking_status: str = "not_booked"
+    square_customer_id: Optional[str] = None
+    square_order_id: Optional[str] = None
+    square_invoice_id: Optional[str] = None
+    square_invoice_number: Optional[str] = None
+    square_invoice_url: Optional[str] = None
+    square_invoice_total_cents: Optional[int] = None
+    square_invoice_status: Optional[str] = None
+    square_invoice_verified_at: Optional[str] = None
+    calendar_event_id: Optional[str] = None
+    calendar_event_url: Optional[str] = None
     gmail_thread_ids: list[str] = field(default_factory=list)
     active_slot: dict = field(default_factory=dict)
     candidate_slots: list[dict] = field(default_factory=list)
@@ -61,7 +71,7 @@ class Reservation:
 
 @dataclass
 class AvailabilityClaim:
-    """An email- or Telegram-derived claim about availability or booking."""
+    """An email- or chat-derived claim about availability or booking."""
 
     reservation_id: str
     actor: str
@@ -108,8 +118,6 @@ class ReservationActionRequest:
     email_subject: Optional[str] = None
     email_body: Optional[str] = None
     recommendation: Optional[str] = None
-    telegram_chat_id: Optional[str] = None
-    telegram_message_id: Optional[str] = None
     source_message_id: Optional[str] = None
     decided_by: Optional[str] = None
     decided_at: Optional[str] = None

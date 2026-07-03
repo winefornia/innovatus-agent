@@ -31,17 +31,14 @@ This goal is the new organizing principle — see §6.
 
 ---
 
-## 2. Legacy architecture (being replaced)
+## 2. Current architecture
 
 ```
 Gmail → tastingroom_mail_watcher.py (60s poll)
       → services/tastingroom_mailbox.py        (candidate filter, dedup, labels)
-      → agents/case_desk_graph.py  (9-node LangGraph):
-          store_raw_event → extract_claims → resolve_case → persist_claims
-          → build_case_bundle → judge_case → save_case_judgment
-          → update_reservation_cache → validate_and_act
-      → services/case_judge.py  (Claude Sonnet judgment)
-      → services/safety_guards.py  (hard rules)
+      → vertex_agent/intake.py:
+          store raw event → extract facts → resolve/update reservation
+          → derive goal gaps → propose next action
       → create_action_request → Google Chat approval card → process_action_decision → Gmail send
 ```
 
@@ -50,7 +47,7 @@ Durable state in Supabase: `reservations`, `availability_claims`, `reservation_e
 
 ---
 
-## 3. The state machine (the part we are removing)
+## 3. The removed state machine
 
 `TASTING_STATES` (services/tastingroom_service.py) — 23 discrete states the case
 could be in. Routing was driven by deriving and matching `current_state`:
@@ -134,7 +131,7 @@ Powered by **Claude** (ADK + LiteLLM), running in Google Chat + Gmail.
 ## 7. KEEP vs REMOVE boundary (for the rebuild)
 
 **REMOVE (legacy orchestration — tasting room only):**
-- `agents/case_desk_graph.py` (the 9-node LangGraph)
+- the old case-desk LangGraph
 - the `TASTING_STATES` machine + state-derivation/routing in `tastingroom_service.py`
 - `services/case_judge.py`, `services/case_memory.py`, `services/safety_guards.py`
   (folded into the agent's instructions + a thin guard)
@@ -151,7 +148,7 @@ Powered by **Claude** (ADK + LiteLLM), running in Google Chat + Gmail.
 → *then* delete the legacy pipeline. Never delete first.
 
 **STATUS — DONE:** the legacy LangGraph pipeline has been removed. Deleted:
-`agents/case_desk_graph.py`, `services/case_judge.py`, `services/case_memory.py`,
+the old case-desk graph, `services/case_judge.py`, `services/case_memory.py`,
 `services/safety_guards.py`, the `TASTING_STATES`/`apply_state` machine in
 `tastingroom_service.py`, the graph-only `tasting_room_registry`, and the
 graph-only dev scripts. The Vertex ADK agent (`vertex_agent/`) is now the sole

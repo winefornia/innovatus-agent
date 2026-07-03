@@ -58,18 +58,21 @@ def format_approval_request(
             f"= ${li['line_total_cents'] / 100:.2f}"
         )
 
+    shipping_cents = shipping_cents or 0
+    final_total_cents = total_before_tax_cents + shipping_cents
+
     lines.extend([
         "",
         f"Subtotal (retail): ${subtotal_cents / 100:.2f}",
         f"Discount: -${discount_cents / 100:.2f}",
-        f"Total before tax: ${total_before_tax_cents / 100:.2f}",
+        f"Wine total: ${total_before_tax_cents / 100:.2f}",
     ])
 
-    if shipping_cents is not None:
-        if shipping_cents == 0:
-            lines.append("Shipping: Waived (order >= $1,500)")
-        else:
-            lines.append(f"Shipping: ${shipping_cents / 100:.2f}")
+    if shipping_cents == 0:
+        lines.append("Shipping: Waived")
+    else:
+        lines.append(f"Shipping: ${shipping_cents / 100:.2f}")
+    lines.append(f"Total before tax: ${final_total_cents / 100:.2f}")
 
     if warnings:
         lines.append("\nWarnings:")
