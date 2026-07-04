@@ -110,8 +110,42 @@ def intake_email(*, subject: str, sender: str, body: str, to_email: str = "",
         raw_payload={"subject": subject, "from": sender, "to": to_email,
                      "gmail_thread_id": gmail_thread_id, "facts": facts},
     )
+
+    # 5) a brand-new case born from the website form → tell staff immediately in
+    # the tasting-room Chat space (the action card follows once the coordinator
+    # decides the next step). Best-effort: notification failure never blocks intake.
+    if is_new:
+        _notify_case_opened(reservation)
+
     return {"unresolved": False, "reservation_id": reservation.reservation_id,
             "message_type": message_type, "experience_type": reservation.experience_type}
+
+
+def _notify_case_opened(reservation) -> None:
+    """Post a "new tasting request" note to the tasting-room Chat space.
+
+    Fires exactly once per case — at creation, which (per the intake guard) only
+    happens for a Squarespace form submission that names a client. Config-gated
+    inside post_text: with GOOGLE_CHAT_TR_SPACE unset this is a no-op.
+    """
+    try:
+        from app.adapters.google_chat_tastingroom import post_text
+
+        given = lambda v: str(v).strip() if v not in (None, "") else "not given yet"  # noqa: E731
+        lines = [
+            f"🍷 *New tasting request* — {given(reservation.client_name)}",
+            f"• Date: {given(reservation.requested_date)}"
+            + (f" at {reservation.requested_time}" if getattr(reservation, "requested_time", None) else ""),
+            f"• Guests: {given(getattr(reservation, 'guest_count', None))}",
+            f"• Experience: {given(getattr(reservation, 'experience_type', None))}",
+            f"• Email: {given(getattr(reservation, 'client_email', None))}",
+            f"Case {reservation.reservation_id} opened from the Squarespace form — "
+            "I'll follow up here with the next step.",
+        ]
+        post_text("\n".join(lines))
+    except Exception as exc:  # pragma: no cover - notification must never block intake
+        log.warning("[tr:intake] new-case notification failed for %s: %s",
+                    getattr(reservation, "reservation_id", "?"), exc)
 
 
 _AGENT_TIMEOUT = float(os.getenv("TR_AGENT_TIMEOUT", "120"))

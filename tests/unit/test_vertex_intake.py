@@ -68,3 +68,66 @@ def test_coordinate_unresolved_passes_through(monkeypatch):
 
     assert res["status"] == "unresolved"
     assert res["reservation_id"] is None
+
+
+# ── new-case notification (Squarespace form → Chat space) ────────────────────
+
+def _wire_intake(mocker, *, existing_case, posted):
+    """Stub intake_email's collaborators so a squarespace form flows through."""
+    from db.models import Reservation
+
+    res = Reservation(
+        reservation_id="TASTING-20260710-4G-MIRA-PARK",
+        client_name="Mira Park", client_email="mirasopa@gmail.com",
+        requested_date="2026-07-10", requested_time="14:00",
+        guest_count=4, experience_type="Tasting",
+    )
+    mocker.patch("db.repository.insert_raw_email_event", return_value=None)
+    trs = "services.tastingroom_service."
+    mocker.patch(trs + "classify_email", return_value="squarespace_form")
+    mocker.patch(trs + "extract_email_facts",
+                 return_value={"client_name": "Mira Park", "client_email": "mirasopa@gmail.com"})
+    mocker.patch(trs + "llm_extract_email", return_value={})
+    mocker.patch(trs + "merge_llm_facts", side_effect=lambda f, llm, mt: f)
+    mocker.patch(trs + "find_or_create_reservation",
+                 return_value=(res.reservation_id, existing_case))
+    mocker.patch(trs + "merge_reservation", return_value=res)
+    mocker.patch(trs + "build_claims", return_value=[])
+    mocker.patch(trs + "persist_processed_email", return_value=None)
+    mocker.patch("app.adapters.google_chat_tastingroom.post_text",
+                 side_effect=lambda text: posted.append(text) or "spaces/x/messages/1")
+    return res
+
+
+def test_new_form_case_posts_chat_notification(mocker):
+    posted = []
+    _wire_intake(mocker, existing_case=None, posted=posted)
+    out = intake.intake_email(subject="Form Submission - Wine tasting Booking",
+                              sender="form-submission@squarespace.info", body="...",
+                              gmail_message_id="m1", gmail_thread_id="t1")
+    assert out["unresolved"] is False
+    assert len(posted) == 1
+    note = posted[0]
+    assert "New tasting request" in note and "Mira Park" in note
+    assert "2026-07-10" in note and "TASTING-20260710-4G-MIRA-PARK" in note
+
+
+def test_follow_up_on_existing_case_does_not_renotify(mocker):
+    posted = []
+    res = _wire_intake(mocker, existing_case={"reservation_id": "TASTING-20260710-4G-MIRA-PARK"},
+                       posted=posted)
+    intake.intake_email(subject="Form Submission - Wine tasting Booking",
+                        sender="form-submission@squarespace.info", body="...",
+                        gmail_message_id="m2", gmail_thread_id="t1")
+    assert posted == []                      # only case BIRTH notifies
+
+
+def test_notification_failure_never_blocks_intake(mocker):
+    posted = []
+    _wire_intake(mocker, existing_case=None, posted=posted)
+    mocker.patch("app.adapters.google_chat_tastingroom.post_text",
+                 side_effect=RuntimeError("chat down"))
+    out = intake.intake_email(subject="Form Submission - Wine tasting Booking",
+                              sender="form-submission@squarespace.info", body="...",
+                              gmail_message_id="m3", gmail_thread_id="t3")
+    assert out["unresolved"] is False        # intake unaffected
