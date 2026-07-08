@@ -53,9 +53,37 @@ def _deadline(seconds: int):
         signal.signal(signal.SIGALRM, prev)
 
 
+def _schema_preflight() -> None:
+    """Verify the live DB has every column the reservation writer uses; alert
+    loudly (log + Chat) on drift. Never blocks startup — the upsert itself
+    degrades gracefully — but drift must be impossible to miss."""
+    try:
+        from db.repository import verify_reservations_schema
+
+        error = verify_reservations_schema()
+    except Exception as exc:
+        logging.warning("Schema preflight could not run: %s", exc)
+        return
+    if not error:
+        logging.info("Schema preflight OK — reservations table matches the code.")
+        return
+    logging.critical("SCHEMA DRIFT: reservations table does not match the code: %s", error)
+    try:
+        from app.adapters.google_chat_tastingroom import post_text
+
+        post_text(
+            "🚨 Tasting-room watcher started with SCHEMA DRIFT — the reservations "
+            f"table does not match the code: {error[:300]}\n"
+            "Apply the pending alters in db/schema.sql to Supabase."
+        )
+    except Exception as exc:
+        logging.warning("Schema drift Chat alert failed: %s", exc)
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     logging.info("Starting tastingroom Gmail watcher; interval=%ss", GMAIL_TASTING_POLL_SECONDS)
+    _schema_preflight()
     polls = 0
     while True:
         try:

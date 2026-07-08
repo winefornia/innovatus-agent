@@ -91,6 +91,15 @@ def intake_email(*, subject: str, sender: str, body: str, to_email: str = "",
             ))
         except Exception:
             pass
+        # A booking form that could not open a case is a lost customer if nobody
+        # notices — tell staff in Chat immediately (quieter mail types stay
+        # Gmail-label-only).
+        if message_type == "squarespace_form":
+            _notify_alert(
+                f"⚠️ A Squarespace booking form arrived but I could not open a case: {reason}\n"
+                f"Subject: {subject}\nFrom: {sender}\n"
+                "It is quarantined under Gmail label 'Tasting Room/Needs Review'."
+            )
         return {"unresolved": True, "reservation_id": None, "message_type": message_type}
 
     reservation = merge_reservation(existing, rid, facts, gmail_thread_id)
@@ -142,10 +151,27 @@ def _notify_case_opened(reservation) -> None:
             f"Case {reservation.reservation_id} opened from the Squarespace form — "
             "I'll follow up here with the next step.",
         ]
-        post_text("\n".join(lines))
+        if post_text("\n".join(lines)) is None:
+            log.warning(
+                "[tr:intake] new-case notification NOT delivered for %s "
+                "(GOOGLE_CHAT_TR_SPACE unset or Chat post failed)",
+                reservation.reservation_id,
+            )
     except Exception as exc:  # pragma: no cover - notification must never block intake
         log.warning("[tr:intake] new-case notification failed for %s: %s",
                     getattr(reservation, "reservation_id", "?"), exc)
+
+
+def _notify_alert(text: str) -> None:
+    """Best-effort out-of-band alert to the tasting-room Chat space. Never raises;
+    config-gated inside post_text (no-op when GOOGLE_CHAT_TR_SPACE is unset)."""
+    try:
+        from app.adapters.google_chat_tastingroom import post_text
+
+        if post_text(text) is None:
+            log.warning("[tr:intake] Chat alert not delivered (space unset or post failed): %s", text)
+    except Exception as exc:
+        log.warning("[tr:intake] Chat alert failed: %s", exc)
 
 
 _AGENT_TIMEOUT = float(os.getenv("TR_AGENT_TIMEOUT", "120"))
@@ -241,6 +267,15 @@ def coordinate_email(*, subject: str, sender: str, body: str, to_email: str = ""
     except Exception as e:
         log.error("[tr:coordinate] intake failed for %s: %s", gmail_message_id, e, exc_info=True)
         _record_intake_failure(gmail_message_id, gmail_thread_id, subject, sender, str(e))
+        # Intake failures are quarantined and never retried (poison-message
+        # policy), so they MUST be loud: the July 2026 schema-drift failure sat
+        # silent for days behind a Gmail label nobody watched.
+        _notify_alert(
+            f"🚨 Tasting-room intake FAILED for an email — it will NOT be retried.\n"
+            f"Subject: {subject}\nFrom: {sender}\nError: {str(e)[:300]}\n"
+            "Fix the cause, then remove the 'Tasting Room/Processed' label from the "
+            "message in Gmail to reprocess it."
+        )
         return {"status": "intake_error", "reservation_id": None,
                 "message_type": "error", "error": str(e)}
 
