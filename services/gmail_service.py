@@ -281,6 +281,13 @@ def list_emails_multi(
         for m in res.get("messages", []):
             seen.setdefault(m["id"], "query")
 
+    # One labels().list for the whole batch — the old per-message lookup was an
+    # N+1 that made larger windows (needed to beat processed-mail starvation)
+    # prohibitively slow.
+    label_name_map = {
+        label["id"]: label["name"]
+        for label in service.users().labels().list(userId="me").execute().get("labels", [])
+    }
     messages = []
     for mid in list(seen)[:max_results]:
         msg = service.users().messages().get(
@@ -290,7 +297,9 @@ def list_emails_multi(
             metadataHeaders=["Subject", "From", "To", "Date"],
         ).execute()
         headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
-        label_names_for_message = _message_label_names(service, msg.get("labelIds", []))
+        label_names_for_message = [
+            label_name_map.get(label_id, label_id) for label_id in msg.get("labelIds", [])
+        ]
         messages.append({
             "message_id": msg["id"],
             "thread_id": msg["threadId"],

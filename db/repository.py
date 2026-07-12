@@ -1,5 +1,7 @@
 """Supabase repository — read/write for invoice_logs and the control layer tables."""
 
+import logging
+import re
 from typing import Optional
 from supabase import create_client, Client
 
@@ -246,12 +248,84 @@ def _reservation_to_row(record: Reservation) -> dict:
     }
 
 
+_MISSING_COLUMN_RE = re.compile(r"Could not find the '([^']+)' column of '([^']+)'")
+# Columns already alerted about this process — one Chat alert per column, not one
+# per email, so schema drift is loud without flooding the space.
+_alerted_missing_columns: set[str] = set()
+
+
+def _missing_column(exc: Exception, table: str) -> Optional[str]:
+    """Return the column name if `exc` is PostgREST's missing-column error
+    (PGRST204) for `table`, else None."""
+    text = " ".join(str(part) for part in (getattr(exc, "message", ""), exc))
+    match = _MISSING_COLUMN_RE.search(text)
+    if match and match.group(2) == table:
+        return match.group(1)
+    return None
+
+
+def _alert_schema_drift(table: str, column: str, context: str) -> None:
+    """CRITICAL log + best-effort Chat alert when the live schema is missing a
+    column the code writes. Never raises."""
+    logging.getLogger(__name__).critical(
+        "[repository] %s table is missing column %r — dropped it to save %s. "
+        "Apply the pending alters in db/schema.sql to Supabase.",
+        table, column, context,
+    )
+    if column in _alerted_missing_columns:
+        return
+    _alerted_missing_columns.add(column)
+    try:
+        from app.adapters.google_chat_tastingroom import post_text
+
+        post_text(
+            f"🚨 Schema drift: the `{table}` table is missing column `{column}`. "
+            f"I saved {context} without it, but apply the pending alters in "
+            "db/schema.sql to Supabase before data is lost."
+        )
+    except Exception:
+        pass
+
+
+def verify_reservations_schema() -> Optional[str]:
+    """Probe the live reservations table for every column this code writes.
+
+    Returns None when code and DB agree, else the PostgREST error text. Run at
+    watcher startup so a deploy whose schema.sql alters were not applied is
+    caught on boot — not days later when the first booking silently fails.
+    """
+    columns = ",".join(_reservation_to_row(Reservation(reservation_id="__probe__")))
+    try:
+        _get_client().table("reservations").select(columns).limit(1).execute()
+        return None
+    except Exception as exc:
+        return str(exc)
+
+
 def upsert_reservation(record: Reservation) -> None:
+    """Insert or update a reservation (keyed on reservation_id).
+
+    Schema-drift tolerant: if the live table lacks a column this code writes
+    (PostgREST PGRST204), the column is dropped from the row and the write is
+    retried, so a new case is opened instead of lost. (A July 2026 booking was
+    silently dropped exactly this way.) Each drift is alerted loudly.
+    """
     client = _get_client()
-    client.table("reservations").upsert(
-        _reservation_to_row(record),
-        on_conflict="reservation_id",
-    ).execute()
+    row = _reservation_to_row(record)
+    for _ in range(len(row)):
+        try:
+            client.table("reservations").upsert(
+                row,
+                on_conflict="reservation_id",
+            ).execute()
+            return
+        except Exception as exc:
+            column = _missing_column(exc, "reservations")
+            if not column or column not in row:
+                raise
+            row.pop(column)
+            _alert_schema_drift("reservations", column, record.reservation_id)
+    raise RuntimeError(f"upsert_reservation: no writable columns left for {record.reservation_id}")
 
 
 def get_reservation(reservation_id: str) -> Optional[dict]:

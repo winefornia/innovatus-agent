@@ -25,22 +25,38 @@ from app.config import (
 )
 
 
+def _query_label_slug(label_name: str) -> str:
+    """Gmail search form of a label name: spaces and slashes become hyphens."""
+    return re.sub(r"[\s/]+", "-", (label_name or "").strip().lower())
+
+
 def list_candidate_messages(max_results: int = 10) -> list[dict[str, Any]]:
     from services.gmail_service import list_emails_multi, list_thread_messages
 
+    # Over-fetch, then drop already-processed mail BEFORE truncating to
+    # max_results. With the old fetch-exactly-N, newest-first processed messages
+    # permanently crowded an older unprocessed one out of the window (the July
+    # 2026 Paige Kim form was starved this way after its first attempt failed).
+    # The query also excludes the processed label outright; the label sources
+    # can't, so they rely on the client-side filter below.
+    fetch_window = max(max_results * 5, 30)
     intake = list_emails_multi(
         label_names=GMAIL_TASTING_SOURCE_LABELS,
-        query=GMAIL_TASTING_QUERY,
-        max_results=max_results,
+        query=f"{GMAIL_TASTING_QUERY} -label:{_query_label_slug(GMAIL_TASTING_PROCESSED_LABEL)}",
+        max_results=fetch_window,
     )
     candidates: dict[str, dict[str, Any]] = {}
     for msg in intake.get("messages", []):
+        if GMAIL_TASTING_PROCESSED_LABEL in (msg.get("labels") or []):
+            continue
         if _looks_like_tastingroom_message(msg):
             candidates[msg["message_id"]] = msg
 
     for thread_id in _active_reservation_thread_ids(limit=75):
         try:
             for msg in list_thread_messages(thread_id, max_results=20):
+                if GMAIL_TASTING_PROCESSED_LABEL in (msg.get("labels") or []):
+                    continue
                 candidates.setdefault(msg["message_id"], msg)
         except Exception as exc:
             logging.warning("[tastingroom mailbox] Failed to inspect thread %s: %s", thread_id, exc)
