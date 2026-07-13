@@ -183,6 +183,12 @@ Key routes in `app/main.py`:
 - Default IDs (Supabase host, GCP project numbers, Chat space, webhook URLs,
   authorized emails) are hardcoded as fallbacks in `app/config.py` and
   overridden by env — change env, not the fallbacks.
+- `scripts/sync.py` (weekly Square→Supabase sync) has **no scheduler in this
+  repo or on Fly** — it runs from outside the deployed system. The invoice half
+  of it is broken as of July 2026 (`square_invoices` is empty while `sync_state`
+  reports success). See `docs/ownership-and-migration.md` §4.
+- Account ownership across Fly/Supabase/GitHub/GCP/Square, and the migration
+  plan to winery control: `docs/ownership-and-migration.md`.
 
 ## How to work with the operator (non-engineer)
 

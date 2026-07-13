@@ -81,9 +81,13 @@ create table if not exists products (
     msrp_bottle_cents   integer,
     variable_pricing    boolean default false,
     tier_unavailable    text[] default '{}',             -- tiers that cannot order this product
+    tier_prices         jsonb,                           -- per-tier bottle prices from the pricing sheet;
+                                                         -- the pricing engine (product_service.py) reads this directly
     created_at          timestamptz default now(),
     updated_at          timestamptz default now()
 );
+
+alter table products add column if not exists tier_prices jsonb;
 
 create index if not exists products_name_idx    on products (lower(name));
 create index if not exists products_vintage_idx on products (vintage);
