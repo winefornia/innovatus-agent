@@ -31,6 +31,12 @@ from app.config import (
     SQUARE_ENVIRONMENT,
 )
 
+
+def invoice_dashboard_url(invoice_id: str) -> str:
+    """Square Dashboard link for an invoice. Drafts have no public payment
+    URL, so this is the only link Cecil can open for an unsent draft."""
+    return f"https://app.squareup.com/dashboard/invoices/{invoice_id}"
+
 _client = None
 
 

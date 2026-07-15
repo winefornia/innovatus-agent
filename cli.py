@@ -58,8 +58,10 @@ def run(message: str):
             customer_name = result.get("customer", {}).get("full_name", "customer")
             preview = result.get("invoice_preview", {})
             total = preview.get("total_before_tax_cents", 0) / 100
+            from services.square_service import invoice_dashboard_url
             print(f"\n[DRAFT SAVED] {customer_name} — ${total:.2f}")
             print(f"  Square Invoice ID: {invoice_id}")
+            print(f"  Open in Square Dashboard: {invoice_dashboard_url(invoice_id)}")
             decision = input("\nSend to client now? [send/draft]: ").strip().lower()
             decision = "send" if decision == "send" else "draft"
             result = invoice_graph.invoke(Command(resume=decision), config=CONFIG)

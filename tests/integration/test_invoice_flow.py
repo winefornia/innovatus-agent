@@ -161,6 +161,12 @@ class TestGoldenPathDraft:
         final = respond(state)
 
         assert "inv_sq_001" in final.get("final_response", "")
+        # Drafts have no public payment URL — the reply must link to the
+        # Square Dashboard so the draft can be opened directly.
+        assert (
+            "https://app.squareup.com/dashboard/invoices/inv_sq_001"
+            in final.get("final_response", "")
+        )
 
 
 # ---------------------------------------------------------------------------
