@@ -1156,18 +1156,23 @@ def confirm_send(state: InvoiceState) -> InvoiceState:
 
     Resume with: "send" | "draft"
     """
+    from services.square_service import invoice_dashboard_url
+
     preview = state.get("invoice_preview", {})
     customer_name = state.get("customer", {}).get("full_name", "customer")
     total = preview.get("total_before_tax_cents", 0) / 100
+    dashboard_url = invoice_dashboard_url(state.get("square_invoice_id", ""))
 
     decision = interrupt({
         "type": "confirm_send_to_client",
         "invoice_id": state.get("square_invoice_id"),
         "customer": customer_name,
         "total": f"${total:.2f}",
+        "dashboard_url": dashboard_url,
         "question": (
             f"Draft created for {customer_name} (${total:.2f}).\n"
-            f"Square Invoice ID: {state.get('square_invoice_id')}\n\n"
+            f"Square Invoice ID: {state.get('square_invoice_id')}\n"
+            f"Open in Square Dashboard: {dashboard_url}\n\n"
             "Type 'send' to publish and send to client, or 'draft' to keep as draft only."
         ),
     })
@@ -1425,6 +1430,8 @@ def respond(state: InvoiceState) -> InvoiceState:
         )
 
     if state.get("send_decision") == "draft" and state.get("square_invoice_id"):
+        from services.square_service import invoice_dashboard_url
+
         preview = state.get("invoice_preview", {})
         total = preview.get("total_before_tax_cents", 0) / 100
         customer_name = state.get("customer", {}).get("full_name", "customer")
@@ -1432,6 +1439,7 @@ def respond(state: InvoiceState) -> InvoiceState:
             "final_response": (
                 f"Draft saved for {customer_name} (${total:.2f}).\n"
                 f"Square Invoice ID: {state['square_invoice_id']}\n"
+                f"Open in Square Dashboard: {invoice_dashboard_url(state['square_invoice_id'])}\n"
                 f"(NOT sent — share manually from Square when ready.)"
                 + recon_suffix
             )

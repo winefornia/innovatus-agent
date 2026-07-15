@@ -368,7 +368,8 @@ def render(state: dict, space_id: str, *, is_card_click: bool = False) -> dict:
         total = (pr.get("total_before_tax_cents") or 0) / 100
         c     = state.get("customer", {})
         name  = c.get("full_name") or c.get("company") or "customer"
-        sq_link = f"https://squareup.com/dashboard/invoices/{sq_id}"
+        from services.square_service import invoice_dashboard_url
+        sq_link = invoice_dashboard_url(sq_id)
         msg   = f"Draft saved in Square\n{name} - ${total:.2f}\nID: {sq_id}\n{sq_link}\n\nSend to client?"
         return _card("send_card", msg, [
             ("Send to Client", "gc_send"),

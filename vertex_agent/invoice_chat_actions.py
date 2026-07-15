@@ -1287,9 +1287,12 @@ def _exec_invoice(customer_name, customer_email, tier, items_json, payment_sched
     _log_invoice_best_effort(customer_name, customer_email, tier, line_items, quote, draft, send, shipping_cents)
 
     if not send:
+        from services.square_service import invoice_dashboard_url
+
         total = _money((quote.get("total_cents") or 0) + (shipping_cents or 0))
         return (f"Draft created ✅ — {customer_name}, {total} ({tier}, {payment_schedule}). "
                 f"Invoice {draft.get('invoice_number') or draft['invoice_id']}. "
+                f"Open in Square Dashboard: {invoice_dashboard_url(draft['invoice_id'])}\n"
                 f"Say *send it* when you want it published to the customer.")
 
     try:
@@ -1303,8 +1306,11 @@ def _exec_invoice(customer_name, customer_email, tier, items_json, payment_sched
             case_id=case_id,
         )
     except ToolError as exc:
+        from services.square_service import invoice_dashboard_url
+
         return (f"Draft created, but publishing failed — {exc.reason}. "
-                f"The draft is saved (invoice {draft.get('invoice_number') or draft['invoice_id']}).")
+                f"The draft is saved (invoice {draft.get('invoice_number') or draft['invoice_id']}): "
+                f"{invoice_dashboard_url(draft['invoice_id'])}")
     url = pub.get("public_url")
     total = _money((quote.get("total_cents") or 0) + (shipping_cents or 0))
     return (f"Sent ✅ — {customer_name}, {total} ({tier}, {payment_schedule})."
