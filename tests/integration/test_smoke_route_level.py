@@ -179,9 +179,35 @@ def test_default_route_message_reaches_chat_agent(client, monkeypatch, mocker):
     assert seen["case"] == "spaces/SMOKECHAT|cecil.park@winefornia.com"
 
 
-def test_default_route_card_click_has_no_handler(client):
-    """Documents the gap: the default route does not consume CARD_CLICKED."""
+def test_default_route_card_click_closes_the_deal(client, monkeypatch, mocker):
+    """The default route now consumes CARD_CLICKED — but only the fixed
+    invchat_* actions, fail-closed on the approver allowlist, straight to the
+    deterministic pending-action executor (no LLM in the loop)."""
+    from app import config
+
     tc, _ = client
-    r = tc.post("/webhooks/google-chat", json=_click("SMOKECHAT", "gc_approve"))
+    monkeypatch.setattr(config, "GOOGLE_CHAT_INVCHAT_AUTHORIZED_EMAILS",
+                        ["cecil.park@winefornia.com"])
+    confirm = mocker.patch("vertex_agent.invoice_chat_actions.confirm_pending_action",
+                           return_value="✅ Invoice created.")
+
+    # No/unknown user on the click → fail-closed, nothing executes.
+    r = tc.post("/webhooks/google-chat", json=_click("SMOKECHAT", "invchat_confirm"))
     assert r.status_code == 200
-    assert "Unknown event type" in json.dumps(r.json())
+    assert "not authorized" in json.dumps(r.json())
+    confirm.assert_not_called()
+
+    # A foreign (wizard) action name never reaches the executor on this route.
+    ev = _click("SMOKECHAT", "gc_approve")
+    ev["user"] = {"email": "cecil.park@winefornia.com"}
+    r = tc.post("/webhooks/google-chat", json=ev)
+    assert "Unrecognized action" in json.dumps(r.json())
+    confirm.assert_not_called()
+
+    # The fixed confirm action from an authorized approver executes the pending
+    # staged action deterministically.
+    ev = _click("SMOKECHAT", "invchat_confirm")
+    ev["user"] = {"email": "cecil.park@winefornia.com"}
+    r = tc.post("/webhooks/google-chat", json=ev)
+    assert "Invoice created" in json.dumps(r.json())
+    confirm.assert_called_once()

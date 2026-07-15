@@ -57,6 +57,11 @@ GOOGLE_AUTHORIZED_ACCOUNTS = [
     if email.strip()
 ]
 
+# ── Deterministic invoice wizard over Google Chat ────────────────────────────
+# The original LangGraph card wizard is preserved at /webhooks/google-chat/graph.
+_GRAPH_DEFAULT_URL = "https://winefornia-agent.fly.dev/webhooks/google-chat/graph"
+GOOGLE_CHAT_GRAPH_ENDPOINT_URL = os.getenv("GOOGLE_CHAT_GRAPH_ENDPOINT_URL", _GRAPH_DEFAULT_URL)
+
 # ── Tasting Room approvals over Google Chat ──────────────────────────────────
 # A SEPARATE Google Chat app (its own GCP project → its own bot identity),
 # pointed at a dedicated route on this same server. All four are config-gated:

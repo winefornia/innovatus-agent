@@ -210,6 +210,7 @@ def _register_all():
         order_id: str,
         customer_id: str,
         title: str = "Winefornia Invoice",
+        message: str = "",
         payment_schedule: str = "NET_30",
         accepted_payment_methods: list | None = None,
         idempotency_key: str = "",
@@ -219,6 +220,7 @@ def _register_all():
             order_id=order_id,
             customer_id=customer_id,
             title=title,
+            message=message,
             payment_schedule=payment_schedule,
             accepted_payment_methods=accepted_payment_methods or ["CARD", "BANK_ACCOUNT"],
             idempotency_key=idempotency_key,
@@ -234,9 +236,22 @@ def _register_all():
             "order_id": "str",
             "customer_id": "str",
             "title": "str",
+            "message": "str",
             "payment_schedule": "UPON_RECEIPT|NET_7|NET_14|NET_30",
             "accepted_payment_methods": "list[CARD|BANK_ACCOUNT]",
         },
+    ))
+
+    def _square_get_invoice(invoice_id: str) -> dict:
+        from services.square_service import get_invoice
+        return get_invoice(invoice_id)
+
+    tool_registry.register(ToolDef(
+        name="square_get_invoice",
+        description="Fetch a Square invoice by ID (read-only).",
+        risk="low",
+        handler=_square_get_invoice,
+        schema={"invoice_id": "str"},
     ))
 
     def _square_publish_invoice(invoice_id: str, invoice_version: int = 0, idempotency_key: str = "") -> dict:

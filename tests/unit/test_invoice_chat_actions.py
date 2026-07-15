@@ -193,6 +193,8 @@ class TestStageInvoice:
 
     def test_confirm_creates_invoice_with_idempotency_keys(self, mocker):
         mocker.patch.object(ica, "_quote", return_value=self._GOOD_QUOTE)
+        from services.tool_registry import tool_registry
+        dispatch = mocker.spy(tool_registry, "dispatch")
         cust = mocker.patch("services.square_service.get_or_create_square_customer",
                             return_value={"customer_id": "C1"})
         order = mocker.patch("services.square_service.create_order",
@@ -207,6 +209,12 @@ class TestStageInvoice:
         ica.stage_invoice("Acme", "a@acme.com", "Wholesale", "[]", "NET_30", 30, True)
         out = ica.confirm_pending_action()
 
+        assert [call.args[0] for call in dispatch.call_args_list] == [
+            "square_create_customer",
+            "square_create_order",
+            "square_create_invoice_draft",
+            "square_publish_invoice",
+        ]
         # all four Square calls carry a deterministic idempotency key
         assert cust.call_args.kwargs["idempotency_key"]
         assert order.call_args.kwargs["idempotency_key"]
@@ -290,6 +298,8 @@ class TestStageSendInvoice:
     def test_confirm_publishes_with_current_version(self, mocker):
         mocker.patch("db.repository.get_recent_invoice_for_customer",
                      return_value={"square_invoice_id": "inv_9"})
+        from services.tool_registry import tool_registry
+        dispatch = mocker.spy(tool_registry, "dispatch")
         mocker.patch("services.square_service.get_invoice", return_value=self._draft(version=7))
         publish = mocker.patch("services.square_service.publish_invoice",
                                return_value={"status": "published", "invoice_id": "inv_9",
@@ -297,6 +307,10 @@ class TestStageSendInvoice:
         ica.stage_send_invoice(customer_name="Christina Yoo")
         out = ica.confirm_pending_action()
         assert "Sent" in out and "WF-0009" in out
+        assert [call.args[0] for call in dispatch.call_args_list] == [
+            "square_get_invoice",
+            "square_publish_invoice",
+        ]
         assert publish.call_args.kwargs.get("invoice_version") == 7 or publish.call_args.args[1:2] == (7,)
         assert not ica._PENDING  # consumed
 

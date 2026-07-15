@@ -1179,15 +1179,20 @@ def confirm_send(state: InvoiceState) -> InvoiceState:
 
 def publish_invoice_node(state: InvoiceState) -> InvoiceState:
     """Publish the Square invoice draft — this sends it to the client."""
-    from services.square_service import publish_invoice
+    from services.tool_registry import ToolError, tool_registry
 
-    result = publish_invoice(
-        invoice_id=state["square_invoice_id"],
-        invoice_version=state.get("square_invoice_version", 0),
-        idempotency_key=_ikey(state.get("_case_id", ""), "publish_invoice"),
-    )
-    if "error" in result:
-        return {"final_response": f"Publish failed: {result['error']}. Invoice draft still saved in Square."}
+    try:
+        result = tool_registry.dispatch(
+            "square_publish_invoice",
+            {
+                "invoice_id": state["square_invoice_id"],
+                "invoice_version": state.get("square_invoice_version", 0),
+                "idempotency_key": _ikey(state.get("_case_id", ""), "publish_invoice"),
+            },
+            case_id=state.get("_case_id", ""),
+        )
+    except ToolError as exc:
+        return {"final_response": f"Publish failed: {exc.reason}. Invoice draft still saved in Square."}
 
     customer_name = state.get("customer", {}).get("full_name", "customer")
     preview = state.get("invoice_preview", {})

@@ -87,7 +87,7 @@ def rewrite_card_buttons(cardsv2: list, endpoint_url: str | None = None) -> None
                         action["function"] = target
 
 
-def wrap_addon_response(resp: dict) -> dict:
+def wrap_addon_response(resp: dict, endpoint_url: str | None = None) -> dict:
     """Wrap a classic Chat response in the add-on hostAppDataAction envelope."""
     if not isinstance(resp, dict):
         return {}
@@ -98,5 +98,5 @@ def wrap_addon_response(resp: dict) -> dict:
     if not message.get("text") and not message.get("cardsV2"):
         return {}
     if message.get("cardsV2"):
-        rewrite_card_buttons(message["cardsV2"])
+        rewrite_card_buttons(message["cardsV2"], endpoint_url=endpoint_url)
     return {"hostAppDataAction": {"chatDataAction": {"createMessageAction": {"message": message}}}}

@@ -21,6 +21,7 @@ import logging
 import os
 import httpx
 from langgraph.types import Command
+from app import config
 from agents.invoice_graph import invoice_graph, checkpointer
 from services.gateway import NormalizedMessage, gateway
 from services.invoice_interrupts import (
@@ -93,7 +94,7 @@ def _to_message_body(resp: dict) -> dict:
     if body.get("cardsV2"):
         try:
             from app.adapters.gchat_format import rewrite_card_buttons
-            rewrite_card_buttons(body["cardsV2"])
+            rewrite_card_buttons(body["cardsV2"], endpoint_url=config.GOOGLE_CHAT_GRAPH_ENDPOINT_URL)
         except Exception:
             pass
     return body
@@ -628,7 +629,7 @@ async def handle_google_chat_event(event: dict) -> dict:
 
     if not async_enabled:
         resp = await _run()
-        return _wrap_addon_response(resp) if is_addon else resp
+        return _wrap_addon_response(resp, endpoint_url=config.GOOGLE_CHAT_GRAPH_ENDPOINT_URL) if is_addon else resp
 
     # Compute in the background; deliver sync if fast, else ack + post async.
     holder: dict = {}
@@ -642,7 +643,7 @@ async def handle_google_chat_event(event: dict) -> dict:
     try:
         await asyncio.wait_for(asyncio.shield(finished.wait()), timeout=_ACK_DEADLINE)
         resp = holder["resp"]                       # finished in time → sync result
-        return _wrap_addon_response(resp) if is_addon else resp
+        return _wrap_addon_response(resp, endpoint_url=config.GOOGLE_CHAT_GRAPH_ENDPOINT_URL) if is_addon else resp
     except asyncio.TimeoutError:
         pass
 
@@ -659,7 +660,7 @@ async def handle_google_chat_event(event: dict) -> dict:
 
     asyncio.create_task(_post_when_ready())
     ack = _text("⏳ Working on it — I'll post the result here in a moment.")
-    return _wrap_addon_response(ack) if is_addon else ack
+    return _wrap_addon_response(ack, endpoint_url=config.GOOGLE_CHAT_GRAPH_ENDPOINT_URL) if is_addon else ack
 
 
 async def _route_event(event: dict) -> dict:
