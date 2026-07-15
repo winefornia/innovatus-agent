@@ -70,6 +70,16 @@ shared invoice key, so a single-project setup works without a new bot.
 - `list_tiers()` — pricing tiers, discount %, multiplier.
 - `recent_invoices(limit)` — recent invoices and status.
 - `price_order(...)` — a priced quote; nothing created.
+- `client_lookup(customer)` — a client's profile: contact info, pricing tier,
+  type, notes (from the `customers` table).
+- `client_history(customer, limit)` — the client's past invoices and orders:
+  dates, totals, paid status, items. Reads the synced Square history
+  (`square_invoices` + `square_orders`, falling back to orders alone when the
+  invoice sync has gaps) plus recent agent-created `invoice_logs`.
+- `usual_order(customer)` — the client's usual (most recent) order, re-priced
+  at today's prices for their tier — powers recommendations and "same as usual".
+- `client_notes(customer)` — remembered facts about a client (preferences,
+  watch-outs) from Mem0 skill memory + the profile's notes field.
 
 **Act (confirm-first):**
 

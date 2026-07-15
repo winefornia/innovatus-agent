@@ -212,6 +212,96 @@ def get_recent_invoice_for_customer(
 
 
 # ---------------------------------------------------------------------------
+# Per-customer history (synced Square data + agent invoice logs)
+#
+# square_invoices / square_orders are written by scripts/sync.py; these are the
+# runtime READ side, powering the invoice chat agent's client_history tools.
+# Matching prefers customers.id (set by the sync's customer map) and falls back
+# to the raw square_customer_id for rows synced before the customer existed.
+# ---------------------------------------------------------------------------
+
+def list_square_invoices_for_customer(
+    customer_id: Optional[str] = None,
+    square_customer_id: Optional[str] = None,
+    limit: int = 20,
+) -> list[dict]:
+    """Historical Square invoices for one customer, newest first."""
+    client = _get_client()
+    query = client.table("square_invoices").select(
+        "square_invoice_id, square_order_id, invoice_number, title, status, "
+        "payment_schedule, total_money_cents, due_date, paid_at, invoice_created_at"
+    )
+    if customer_id:
+        query = query.eq("customer_id", customer_id)
+    elif square_customer_id:
+        query = query.eq("square_customer_id", square_customer_id)
+    else:
+        return []
+    result = query.order("invoice_created_at", desc=True).limit(limit).execute()
+    return result.data or []
+
+
+def list_square_orders_for_customer(
+    customer_id: Optional[str] = None,
+    square_customer_id: Optional[str] = None,
+    limit: int = 20,
+) -> list[dict]:
+    """Historical Square orders (with line_items) for one customer, newest first."""
+    client = _get_client()
+    query = client.table("square_orders").select(
+        "square_order_id, state, total_money_cents, line_items, order_created_at"
+    )
+    if customer_id:
+        query = query.eq("customer_id", customer_id)
+    elif square_customer_id:
+        query = query.eq("square_customer_id", square_customer_id)
+    else:
+        return []
+    result = query.order("order_created_at", desc=True).limit(limit).execute()
+    return result.data or []
+
+
+def get_square_orders_by_ids(order_ids: list[str]) -> list[dict]:
+    """Fetch square_orders rows by their Square order ids (for invoice→items joins)."""
+    ids = [i for i in (order_ids or []) if i]
+    if not ids:
+        return []
+    client = _get_client()
+    result = (
+        client.table("square_orders")
+        .select("square_order_id, state, total_money_cents, line_items, order_created_at")
+        .in_("square_order_id", ids)
+        .execute()
+    )
+    return result.data or []
+
+
+def list_invoice_logs_for_customer(
+    customer_name: Optional[str] = None,
+    customer_id: Optional[str] = None,
+    limit: int = 10,
+) -> list[dict]:
+    """Agent-created invoice logs for one customer, newest first.
+
+    The plural sibling of get_recent_invoice_for_customer — same matching rules.
+    """
+    if not customer_id and not customer_name:
+        return []
+    client = _get_client()
+    query = client.table("invoice_logs").select(
+        "thread_id, customer_name, customer_email, tier_name, line_items, "
+        "total_before_tax_cents, shipping_cents, payment_schedule, approval, "
+        "square_invoice_id, square_invoice_number, verification_status, created_at"
+    )
+    if customer_id:
+        query = query.eq("customer_id", customer_id)
+    else:
+        query = query.ilike("customer_name", f"%{customer_name}%")
+    result = query.order("created_at", desc=True).limit(limit).execute()
+    return result.data or []
+
+
+# ---------------------------------------------------------------------------
 # Tasting room reservations
 # ---------------------------------------------------------------------------
 
