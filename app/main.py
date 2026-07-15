@@ -15,6 +15,7 @@ Endpoints:
   GET  /reservations/recent     — recent reservation cases
   GET  /activity                — operator activity page
   GET  /health                  — health check
+  POST /mcp/invoice[/<secret>]  — MCP operator console for Claude (read-only, invoice pipeline)
 
 Gmail is used for the tasting room (reservation intake + replies) and for
 sending invoice receipt emails to customers — NOT for invoice order intake;
@@ -38,8 +39,10 @@ logging.basicConfig(
 )
 
 from app.adapters.google_chat_adapter import handle_google_chat_event
+from app.mcp_invoice import router as mcp_invoice_router
 
 app = FastAPI(title="Winefornia Invoice Agent", version="0.3.0")
+app.include_router(mcp_invoice_router)  # read-only MCP console (fail-closed without MCP_INVOICE_SECRET)
 
 
 def _jsonable_graph_result(result: dict) -> dict:
