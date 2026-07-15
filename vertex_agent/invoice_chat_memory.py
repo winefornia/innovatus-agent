@@ -14,6 +14,15 @@ The adapter derives the case key (case_key) and passes it to discuss(), which
 replays the transcript above the new message as "[conversation so far]" and
 records both sides of the exchange afterwards.
 
+Durability: the in-process store is a fast cache; every turn is ALSO appended
+best-effort to Supabase invoice_chat_turns. On a cache miss (process restart,
+LRU eviction) render_case rehydrates the recent window from the durable copy,
+so a mid-order restart no longer loses the conversation. Months-old talk is
+deliberately NOT rehydrated into the live window — that recall goes through
+the past_conversations search tool instead. Persistence failures trip a
+circuit breaker (_persist_broken) so a dead DB degrades to the old in-memory
+behavior instead of stalling every turn.
+
 Bounds, so a hot space can't grow the prompt or the process without limit:
   - per case:  the last _MAX_TURNS entries, each capped at _ENTRY_MAX_CHARS
     (an attached-PDF digest is consumed the turn it arrives; memory keeps only
@@ -25,9 +34,12 @@ Bounds, so a hot space can't grow the prompt or the process without limit:
 from __future__ import annotations
 
 import collections
+import logging
 import threading
 import time
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 _MAX_CASES = 200
 _MAX_TURNS = 16          # entries (a staff+assistant exchange is 2)
@@ -42,6 +54,65 @@ _cases: "collections.OrderedDict[str, dict[str, Any]]" = collections.OrderedDict
 _lock = threading.Lock()
 
 _ROLE_LABELS = {"staff": "Staff", "assistant": "You"}
+
+# Circuit breaker for the durable copy: after this many consecutive failures we
+# stop trying for the rest of the process (a dead DB must not slow every turn).
+_PERSIST_MAX_FAILURES = 3
+_persist_failures = 0
+_persist_broken = False
+
+
+def _persist_turn(key: str, role: str, text: str) -> None:
+    """Best-effort append to the durable transcript (invoice_chat_turns)."""
+    global _persist_failures, _persist_broken
+    if _persist_broken:
+        return
+    try:
+        from db.repository import insert_chat_turn
+        insert_chat_turn(key, role, text)
+        _persist_failures = 0
+    except Exception as exc:
+        _persist_failures += 1
+        if _persist_failures >= _PERSIST_MAX_FAILURES:
+            _persist_broken = True
+            log.warning("[inv:chat-memory] persistence disabled after %d failures: %s",
+                        _persist_failures, exc)
+        else:
+            log.info("[inv:chat-memory] durable append failed: %s", exc)
+
+
+def _rehydrate(key: str) -> dict | None:
+    """Rebuild a case's rolling window from the durable copy after a cache miss.
+
+    Only turns inside the live-case window (_CASE_TTL) are restored — anything
+    older belongs to a finished conversation and is reachable via the
+    past_conversations search tool, not the live prompt."""
+    if _persist_broken:
+        return None
+    try:
+        from datetime import datetime, timezone
+        from db.repository import list_chat_turns_for_case
+        rows = list_chat_turns_for_case(key, limit=_MAX_TURNS)
+    except Exception as exc:
+        log.info("[inv:chat-memory] rehydrate failed: %s", exc)
+        return None
+    turns = []
+    now = time.time()
+    for r in rows:
+        role, text = r.get("role"), (r.get("text") or "").strip()
+        if role not in _ROLE_LABELS or not text:
+            continue
+        try:
+            created = datetime.fromisoformat(str(r.get("created_at")).replace("Z", "+00:00"))
+            age = now - created.timestamp()
+        except Exception:
+            age = 0.0
+        if age > _CASE_TTL:
+            continue
+        turns.append({"role": role, "text": text[:_ENTRY_MAX_CHARS]})
+    if not turns:
+        return None
+    return {"ts": now, "turns": turns[-_MAX_TURNS:]}
 
 
 def case_key(thread: str = "", space: str = "", user: str = "") -> str:
@@ -72,6 +143,7 @@ def record_turn(key: str, role: str, text: str) -> None:
         return
     if len(text) > _ENTRY_MAX_CHARS:
         text = text[:_ENTRY_MAX_CHARS].rstrip() + " … [truncated]"
+    _persist_turn(key, role, text)
     with _lock:
         entry = _cases.get(key)
         if entry is None or time.time() - entry["ts"] > _CASE_TTL:
@@ -88,6 +160,15 @@ def render_case(key: str) -> str:
     """The case transcript as a prompt-ready block, oldest first. "" when empty."""
     if not key:
         return ""
+    with _lock:
+        entry = _cases.get(key)
+    if not entry:
+        # Cache miss (restart / LRU eviction) — try the durable copy.
+        entry = _rehydrate(key)
+        if entry:
+            with _lock:
+                _cases[key] = entry
+                _cases.move_to_end(key)
     with _lock:
         entry = _cases.get(key)
         if not entry:

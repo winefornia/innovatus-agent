@@ -187,6 +187,8 @@ def confirm_pending_action() -> str:
             return _exec_invoice(**params)
         if kind == "send_existing":
             return _exec_send_existing(**params)
+        if kind == "update_client":
+            return _exec_update_client(**params)
     except Exception as exc:  # pragma: no cover - defensive
         log.warning("[inv:chat-actions] confirm failed (%s): %s", kind, exc)
         return f"That didn't go through — {exc}"
@@ -636,6 +638,76 @@ def client_notes(customer: str) -> dict:
     return {"customer": q, "notes": notes[:8]}
 
 
+def past_conversations(query: str, limit: int = 10) -> dict:
+    """Search past chat conversations — including from months ago — for what was
+    discussed, quoted, or decided. Read-only.
+
+    Use for "what did we discuss with Christina back in May?", "didn't we quote
+    Oak Barrel a case price?", "what did I ask you about last month?". This
+    searches the durable transcript of THIS assistant's conversations; for
+    actual invoices use client_history / recent_invoices instead.
+
+    Args:
+        query: a customer name, wine, or phrase to search for.
+        limit: max matching snippets (default 10).
+    """
+    from db.repository import search_chat_turns
+
+    q = (query or "").strip()
+    if not q:
+        return {"matches": []}
+    try:
+        rows = search_chat_turns(q, limit=max(1, min(int(limit or 10), 20)))
+    except Exception as exc:  # pragma: no cover - defensive
+        return {"error": f"Couldn't search past conversations: {exc}"}
+    return {"query": q, "matches": [{
+        "when": r.get("created_at"),
+        "who": "staff" if r.get("role") == "staff" else "assistant",
+        "said": (r.get("text") or "")[:500],
+    } for r in rows]}
+
+
+def client_reservations(customer: str, limit: int = 5) -> dict:
+    """A client's tasting-room visits/bookings (from the Squarespace form
+    pipeline): dates, party size, experience, booking + payment status.
+    STRICTLY read-only — reservations are coordinated by the tasting-room
+    assistant, never from here.
+
+    Use for "has Christina visited the tasting room?", "does Oak Barrel have a
+    tasting booked?".
+
+    Args:
+        customer: the client's name or email address.
+        limit: max bookings to return (default 5).
+    """
+    from db.repository import list_reservations_for_client
+
+    q = (customer or "").strip()
+    if not q:
+        return {"found": False, "hint": "Whose bookings should I look up?"}
+    try:
+        if "@" in q:
+            rows = list_reservations_for_client(client_email=q, limit=limit)
+        else:
+            rows = list_reservations_for_client(client_name=q, limit=limit)
+    except Exception as exc:  # pragma: no cover - defensive
+        return {"error": f"Couldn't read reservations: {exc}"}
+    if not rows:
+        return {"found": False, "hint": f"No tasting-room bookings on file for '{q}'."}
+    return {"found": True, "bookings": [{
+        "date": r.get("requested_date"),
+        "time": r.get("requested_time"),
+        "guests": r.get("guest_count"),
+        "experience": r.get("experience_type"),
+        "state": r.get("current_state"),
+        "booking_status": r.get("booking_status"),
+        "payment_status": r.get("payment_status"),
+        "invoice_number": r.get("square_invoice_number"),
+        "client": r.get("client_name"),
+    } for r in rows],
+        "note": "Read-only view — booking changes go through the tasting-room assistant."}
+
+
 # ── WRITE tools: pricing edits (confirm-first, both Supabase + JSON) ───────────
 
 def stage_set_channel_price(product: str, channel: str, price: float, vintage: int = 0) -> str:
@@ -900,6 +972,87 @@ def stage_send_invoice(customer_name: str = "", invoice_number: str = "") -> str
         "invoice_id": invoice_id, "customer_name": (customer_name or "").strip(),
         "idem": uuid.uuid4().hex,
     }, summary)
+
+
+# ── client profile edits (confirm-first, Supabase customers table) ────────────
+
+def stage_update_client(customer: str, tier: str = "", email: str = "",
+                        phone: str = "", add_note: str = "") -> str:
+    """Stage an update to a client's profile — pricing tier, email, phone,
+    and/or an appended note — then ask the user to confirm. Does NOT write
+    until they reply yes.
+
+    Use when staff say "put Oak Barrel on Wholesale", "her new email is x@y",
+    "note that she prefers morning deliveries". Pass "" to leave a field
+    unchanged.
+
+    Args:
+        customer: the client's current name, company, or email on file.
+        tier: new pricing tier name, or "" to keep.
+        email: new email address, or "" to keep.
+        phone: new phone number, or "" to keep.
+        add_note: a note to APPEND to their profile (existing notes are kept), or "".
+    """
+    res = _find_client(customer)
+    if res.get("match") in (None, "none"):
+        return (f"I can't find a customer matching '{customer}' — "
+                "give me their exact name, company, or email and I'll try again.")
+    cust = res.get("customer") or {}
+    cust_id = cust.get("id")
+    name = cust.get("full_name") or cust.get("company") or customer
+    if not cust_id:
+        return (f"{name} isn't in the customer database yet (file-only profile), "
+                "so I can't edit them from chat.")
+
+    fields: dict[str, Any] = {}
+    changes: list[str] = []
+    tier = (tier or "").strip()
+    if tier:
+        from services.product_service import get_tier_by_name
+        t = get_tier_by_name(tier)
+        if not t:
+            return (f"'{tier}' isn't a pricing tier I know — use list_tiers to "
+                    "see the valid names.")
+        fields["tier_name"] = t.get("name")
+        changes.append(f"tier → *{t.get('name')}*")
+    email = (email or "").strip()
+    if email:
+        if "@" not in email or " " in email:
+            return f"'{email}' doesn't look like an email address — double-check it?"
+        fields["email"] = email
+        changes.append(f"email → {email}")
+    phone = (phone or "").strip()
+    if phone:
+        fields["phone"] = phone
+        changes.append(f"phone → {phone}")
+    add_note = (add_note or "").strip()
+    if add_note:
+        existing = (cust.get("notes") or "").strip()
+        fields["notes"] = f"{existing}\n{add_note}".strip()
+        changes.append(f"note added: \"{add_note}\"")
+    if not fields:
+        return f"What should I change on {name}'s profile — tier, email, phone, or a note?"
+
+    summary = (f"Update *{name}*'s profile: " + "; ".join(changes)
+               + ".\n\nReply *yes* to confirm.")
+    return _stage("update_client", {
+        "customer_id": cust_id, "name": name, "fields": fields,
+    }, summary)
+
+
+def _exec_update_client(customer_id: str, name: str, fields: dict) -> str:
+    from db.repository import update_customer_fields
+
+    try:
+        ok = update_customer_fields(customer_id, fields)
+    except Exception as exc:
+        return f"That didn't go through — the profile update failed ({exc})."
+    if not ok:
+        return f"Hmm — I couldn't find {name}'s record to update. Nothing changed."
+    pretty = ", ".join(sorted(fields.keys())).replace("tier_name", "tier")
+    log.info("[inv:chat-actions] client profile updated by %s: %s (%s)",
+             _user(), name, pretty)
+    return f"Done ✅ Updated {name}'s {pretty}."
 
 
 # ── pricing quote (shared by price_order + stage_invoice) ─────────────────────
@@ -1189,6 +1342,8 @@ READ_TOOLS = [
     client_history,
     usual_order,
     client_notes,
+    past_conversations,
+    client_reservations,
 ]
 WRITE_TOOLS = [
     stage_set_channel_price,
@@ -1197,6 +1352,7 @@ WRITE_TOOLS = [
     stage_set_availability,
     stage_invoice,
     stage_send_invoice,
+    stage_update_client,
     confirm_pending_action,
     cancel_pending_action,
 ]
