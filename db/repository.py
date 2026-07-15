@@ -861,6 +861,23 @@ def list_stale_running_cases(older_than_iso: str, limit: int = 500) -> list[dict
     return resp.data or []
 
 
+def list_recent_cases(limit: int = 20, status: str = "") -> list[dict]:
+    """Recent agent cases, newest first; optionally filtered by status.
+
+    Read-only view for the MCP operator console (app/mcp_invoice.py)."""
+    client = _get_client()
+    query = (
+        client.table("agent_cases")
+        .select("case_id, sender_id, user_id, intent, agent, risk_level, status, outcome, error_summary, created_at, closed_at")
+        .order("created_at", desc=True)
+        .limit(limit)
+    )
+    if status:
+        query = query.eq("status", status)
+    resp = query.execute()
+    return resp.data or []
+
+
 def insert_trace_event(event: TraceEvent) -> None:
     client = _get_client()
     client.table("trace_events").insert({
@@ -872,6 +889,22 @@ def insert_trace_event(event: TraceEvent) -> None:
         "latency_ms": event.latency_ms,
         "error":      event.error,
     }).execute()
+
+
+def list_trace_events_for_case(case_id: str, limit: int = 100) -> list[dict]:
+    """Trace events for one case, oldest first — the step-by-step story.
+
+    Read-only view for the MCP operator console (app/mcp_invoice.py)."""
+    client = _get_client()
+    resp = (
+        client.table("trace_events")
+        .select("event_id, event_type, layer, data, latency_ms, error, ts")
+        .eq("case_id", case_id)
+        .order("ts")
+        .limit(limit)
+        .execute()
+    )
+    return resp.data or []
 
 
 def insert_failure_label(label: FailureLabel) -> None:
@@ -1000,3 +1033,19 @@ def get_chat_pending(chat_user: str) -> Optional[dict]:
 def delete_chat_pending(chat_user: str) -> None:
     client = _get_client()
     client.table("chat_pending_actions").delete().eq("chat_user", chat_user).execute()
+
+
+def list_chat_pending(limit: int = 20) -> list[dict]:
+    """All staged-but-unconfirmed chat actions, newest first (one per chat user).
+
+    Read-only view for the MCP operator console (app/mcp_invoice.py); params
+    (which can hold drafted email bodies) are deliberately excluded."""
+    client = _get_client()
+    result = (
+        client.table("chat_pending_actions")
+        .select("chat_user, kind, summary, created_at")
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return result.data or []
