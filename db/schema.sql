@@ -400,13 +400,19 @@ create table if not exists reservation_action_requests (
     source_message_id      text,
     decided_by             text,
     decided_at             timestamptz,
+    idempotency_key        text,              -- dedupe guard: same key can't create a second action card
     created_at             timestamptz default now(),
     updated_at             timestamptz default now()
 );
 
+alter table reservation_action_requests add column if not exists idempotency_key text;
+
 create index if not exists reservation_action_requests_reservation_idx on reservation_action_requests (reservation_id);
 create index if not exists reservation_action_requests_status_idx      on reservation_action_requests (status);
 create index if not exists reservation_action_requests_created_idx     on reservation_action_requests (created_at desc);
+create unique index if not exists reservation_action_requests_idempotency_key_idx
+    on reservation_action_requests (idempotency_key)
+    where idempotency_key is not null;
 
 create or replace trigger reservation_action_requests_updated_at
     before update on reservation_action_requests
