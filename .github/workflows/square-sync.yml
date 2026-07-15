@@ -1,0 +1,58 @@
+name: Square Sync
+
+# Weekly Square → Supabase sync (customers, orders, invoices).
+# Replaces the cron that ran on a personal machine (and silently stopped —
+# see docs/ownership-and-migration.md §4). Failures here turn the workflow
+# red and email repo watchers; a missing secret is a hard error, not a skip,
+# because "quietly not syncing" is the exact failure mode this exists to end.
+
+on:
+  schedule:
+    - cron: "0 9 * * 0" # Sundays 09:00 UTC — same cadence the old cron used
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "Full backfill (ignore sync_state; upserts are idempotent)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: square-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync Square to Supabase
+    runs-on: ubuntu-latest
+    env:
+      SQUARE_PROD_ACCESS_TOKEN: ${{ secrets.SQUARE_PROD_ACCESS_TOKEN }}
+      SQUARE_PROD_LOCATION_ID: ${{ secrets.SQUARE_PROD_LOCATION_ID }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+    steps:
+      - name: Check secrets
+        run: |
+          missing=""
+          [ -z "$SQUARE_PROD_ACCESS_TOKEN" ] && missing="$missing SQUARE_PROD_ACCESS_TOKEN"
+          [ -z "$SQUARE_PROD_LOCATION_ID" ]  && missing="$missing SQUARE_PROD_LOCATION_ID"
+          [ -z "$SUPABASE_URL" ]             && missing="$missing SUPABASE_URL"
+          [ -z "$SUPABASE_SERVICE_KEY" ]     && missing="$missing SUPABASE_SERVICE_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repo Actions secrets:$missing — add them under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run sync
+        run: python scripts/sync.py ${{ inputs.full == true && '--full' || '' }}
