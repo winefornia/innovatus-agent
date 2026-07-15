@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 *.pyo
+.pytest_cache/
 .venv/
 venv/
 .DS_Store
@@ -27,3 +28,6 @@ logs/
 
 # gstack local data (security reports, learnings)
 .gstack/
+
+# Claude Code local settings (accumulated session permission grants)
+.claude/

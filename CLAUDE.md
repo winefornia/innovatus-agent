@@ -39,7 +39,8 @@ See `docs/how-it-works.md` for the full plain-language guide.
 - **Square** is production money. **Anthropic API** (Claude Haiku) is the LLM
   sidecar. **Mem0** stores operator skill memory.
 - Secrets live in **Fly secrets** (`flyctl secrets`), never in the repo.
-  `.env.example` lists only a subset; `app/config.py` is the authoritative list.
+  `.env.example` lists only a subset; `app/config.py` lists most (a few are read
+  directly in services — see the file map note on config.py).
 
 ## Hard Rules (break these and real bookings/money are lost)
 
@@ -94,7 +95,10 @@ edit on a branch → open PR → GitHub Actions runs pytest (hermetic, all mocke
 ```
 app/                    FastAPI layer
   main.py               All webhooks & routes (see list below), startup heartbeat monitor
-  config.py             Every env var the app reads (authoritative list, with comments)
+  config.py             Main env-var list (with comments). Not exhaustive: GCHAT_VERIFY
+                        (app/main.py) and the Gmail service-account vars
+                        (GOOGLE_SERVICE_ACCOUNT_JSON_B64, GOOGLE_DELEGATED_USER_EMAIL,
+                        GOOGLE_TOKEN_JSON_B64_*) are read directly in services/
   schemas.py            Pydantic invoice shapes (LineItem, InvoiceDraft)
   adapters/             Google Chat UI adapters (wizard cards, chat, tasting-room cards)
   data/                 JSON fallbacks: product_catalog.json, pricing_tiers.json, approval_log.json
@@ -121,8 +125,8 @@ services/               All integrations & cross-cutting logic
   tastingroom_service.py    ✉ reservation coordination + approval decisions
   tastingroom_chat_service.py  staff NL commands for reservations
   invoice_mail_validator.py 💰 closes invoice cases from Square's own emails
-  customer_service.py / product_service.py / history_service.py   lookups & pricing
-  skill_service.py / mem0_service.py     "same as usual" memory
+  customer_service.py / product_service.py   lookups & pricing
+  skill_service.py          "same as usual" memory (Mem0-backed)
   control_layer.py          case lifecycle, tracing, stale-case reaping
   guardrail_service.py      deterministic pre/post checks (never LLM)
   invoice_hooks.py / invoice_interrupts.py / gateway.py   plumbing

@@ -26,7 +26,7 @@ For each provider, "migrated" means **all four** of:
 1. **Account/org ownership** — a winery-controlled account is Owner; no single personal account is a single point of failure.
 2. **Billing** — charged to the winery, not a personal card.
 3. **Credentials rotated** — the token the *server actually uses* was minted by the winery-owned account. Ownership transfer without rotation still leaves the old personal account able to mint valid credentials.
-4. **Secrets updated** — new values set via `flyctl secrets set` (server) and GitHub → Settings → Secrets → Actions (CI). `app/config.py` is the authoritative list of what the server reads.
+4. **Secrets updated** — new values set via `flyctl secrets set` (server) and GitHub → Settings → Secrets → Actions (CI). `app/config.py` lists most of what the server reads (a few vars — `GCHAT_VERIFY`, `GOOGLE_SERVICE_ACCOUNT_JSON_B64`, `GOOGLE_DELEGATED_USER_EMAIL`, `GOOGLE_TOKEN_JSON_B64_*` — are read directly in `app/main.py` / `services/gmail_service.py`).
 
 ## 3. Step-by-step
 

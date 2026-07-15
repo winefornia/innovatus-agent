@@ -98,7 +98,7 @@ Price/category edits write to **both Supabase and the `app/data` JSON**:
 Editable values: per-channel price (`tier_prices`), MSRP (`msrp_bottle_cents`),
 tier discount %/multiplier (`pricing_tiers`), and tier availability
 (`tier_unavailable`). The Supabase `products` table carries a `tier_prices` jsonb
-column (note: `db/schema.sql` is stale and omits it).
+column, defined in `db/schema.sql`.
 
 > **Caveat:** on Fly's ephemeral filesystem the JSON write is not durable across
 > deploys — Supabase is the durable source. Treat the JSON half as best-effort
