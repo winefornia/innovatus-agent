@@ -73,6 +73,8 @@ Max 2 edit rounds per invoice. After that Cecil must resubmit the full order.
 
 All channels normalize to `NormalizedMessage` before reaching the invoice graph. Adding a new channel requires zero changes to business logic.
 
+Replies land in the thread the message came from — including async "working on it" results, which are posted with `messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD` so flat ("conversation view") spaces gracefully get a normal message instead of an error.
+
 ## Tasting room agent
 
 A separate Gmail watcher and reservation coordinator handle tasting-room emails end-to-end:
@@ -99,9 +101,12 @@ Claude-powered coordination proposes the next best reservation action, but outbo
 winefornia-agent/
   app/
     config.py               # env vars
-    main.py                 # FastAPI: /webhooks/google-chat*, /webhooks/gmail/tastingroom/poll
+    main.py                 # FastAPI: /webhooks/google-chat*, /webhooks/gmail/*/poll, /mcp/invoice
+    mcp_invoice.py          # read-only MCP operator console for Claude (fail-closed)
     adapters/
-      google_chat_adapter.py  # Google Chat event handler
+      google_chat_adapter.py       # invoice wizard cards (legacy front-end)
+      google_chat_invoice_chat.py  # conversational invoicing assistant (default front-end)
+      google_chat_tastingroom.py   # tasting-room approval cards
     data/
       customers.json          # customers synced from Square (gitignored — PII)
       product_catalog.json    # wine SKUs with MSRP
@@ -180,11 +185,16 @@ uvicorn app.main:app --reload
 ## API endpoints
 
 ```
-POST /webhooks/gmail/tastingroom/poll  — poll Gmail for tasting room emails
-POST /webhooks/google-chat        — Google Chat HTTP app events
-GET  /invoices/recent             — last N invoice logs from Supabase
-GET  /reservations/recent         — last N tasting room reservations
-GET  /health
+POST /webhooks/google-chat             — invoicing assistant (default front-end)
+POST /webhooks/google-chat/graph       — legacy card wizard
+POST /webhooks/google-chat/tastingroom — tasting-room approval cards + staff chat
+POST /webhooks/gmail/tastingroom/poll  — on-demand poll for tasting-room emails
+POST /webhooks/gmail/invoice-validation/poll — on-demand poll for Square confirmation emails
+POST /mcp/invoice[/<secret>]           — read-only MCP operator console (Claude)
+GET  /invoices/recent                  — last N invoice logs from Supabase
+GET  /reservations/recent              — last N tasting room reservations
+GET  /activity?key=…                   — operator activity page
+GET  /health                           — 200 healthy, 503 = watcher heartbeat stale
 ```
 
 ## Gmail auth stability

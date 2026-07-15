@@ -57,7 +57,12 @@ shared invoice key, so a single-project setup works without a new bot.
    pending entry and runs the real mutation through the shared services. On "no"
    it calls `cancel_pending_action()`.
 6. **Ack-then-post** — if a turn runs past ~20s (LLM loop, PDF, Square calls), the
-   adapter acks Google Chat and posts the result to the space when it lands.
+   adapter acks Google Chat and posts the result to the space when it lands. The
+   late post replies **into the thread the message came from**
+   (`messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD`), so in a threaded
+   space the answer lands under the question; in a flat "conversation view" space
+   Chat falls back to a normal message instead of erroring. The wizard adapter
+   (`google_chat_adapter.py`) does the same for its async posts.
 
 ---
 

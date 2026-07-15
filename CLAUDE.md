@@ -84,7 +84,7 @@ edit on a branch → open PR → GitHub Actions runs pytest (hermetic, all mocke
   `main`, and requires the `FLY_API_TOKEN` repo secret.
 - Tests: `pytest -q` — no real network or secrets needed
   (`tests/conftest.py` mocks Square/Supabase/Anthropic and sets dummy env).
-  ~31 test files: `tests/unit/` for services, `tests/integration/` for full flows.
+  ~40 test files: `tests/unit/` for services, `tests/integration/` for full flows.
 - Local single-command smoke test of the invoice graph: `python cli.py --message "..."`.
 - **Checklist for any PR**: tests pass → does it touch `db/schema.sql`? (Hard
   Rule 1) → does it touch money/email paths? (Hard Rule 3) → then merge.
@@ -96,7 +96,10 @@ app/                    FastAPI layer
   main.py               All webhooks & routes (see list below), startup heartbeat monitor
   config.py             Every env var the app reads (authoritative list, with comments)
   schemas.py            Pydantic invoice shapes (LineItem, InvoiceDraft)
-  adapters/             Google Chat UI adapters (wizard cards, chat, tasting-room cards)
+  mcp_invoice.py        Read-only MCP operator console for Claude (invoice pipeline
+                        only; fail-closed without MCP_INVOICE_SECRET)
+  adapters/             Google Chat UI adapters (wizard cards, chat, tasting-room cards);
+                        async replies post back into the originating Chat thread
   data/                 JSON fallbacks: product_catalog.json, pricing_tiers.json, approval_log.json
 
 agents/                 Invoice pipeline brain (LangGraph)
@@ -152,7 +155,8 @@ Key routes in `app/main.py`:
 `/webhooks/google-chat/graph` (legacy wizard) ·
 `/webhooks/google-chat/tastingroom` (approval cards) ·
 `POST /webhooks/gmail/tastingroom/poll` and `/webhooks/gmail/invoice-validation/poll`
-(on-demand mail polls) · `GET /invoices/recent`, `/reservations/recent` ·
+(on-demand mail polls) · `POST /mcp/invoice[/<secret>]` (read-only MCP operator
+console) · `GET /invoices/recent`, `/reservations/recent` ·
 `GET /activity?key=…` (operator page) · `GET /health`.
 
 ## When something breaks — where to look

@@ -27,3 +27,6 @@ logs/
 
 # gstack local data (security reports, learnings)
 .gstack/
+
+# Claude Code machine-local settings (shared settings.json IS committed)
+.claude/settings.local.json

@@ -17,6 +17,11 @@ PDFs: when staff attach an order PDF, we download it with the bot token, digest 
 to text via services.pdf_service, and feed that text to the agent as input state —
 the agent reads it, pulls out the customer + items, and stages an invoice.
 
+Confirm-card: when a turn stages a confirm-first action, the reply carries a card
+with fixed invchat_confirm / invchat_cancel buttons. A tap arrives as CARD_CLICKED
+on this same route and goes straight to confirm/cancel_pending_action — the
+endpoint closes the deal deterministically; typing "yes" still works too.
+
 Production hardening (lifted from the tasting-room adapter, learned the hard way):
   - ack-then-post: if the handler runs past Google Chat's ~30s timeout, ack and
     post the real result to the space when ready.
@@ -39,6 +44,7 @@ import httpx
 from app import config
 from app.adapters.gchat_format import (
     normalize_addon_event,
+    rewrite_card_buttons,
     wrap_addon_response,
 )
 
@@ -118,6 +124,10 @@ def _post_message_sync(space_name: str, body: dict) -> bool:
     if not token or not space_name or not body:
         return False
     url = f"https://chat.googleapis.com/v1/{space_name}/messages"
+    if body.get("thread"):
+        # Reply into the originating thread; in a flat ("conversation view")
+        # space Chat ignores the thread and posts normally instead of erroring.
+        url += "?messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD"
     try:
         with httpx.Client(timeout=30) as client:
             r = client.post(url, headers={"Authorization": f"Bearer {token}"}, json=body)
@@ -229,8 +239,30 @@ def _is_authorized(email: str) -> bool:
     return (email or "").strip().lower() in allow
 
 
-def _text_resp(msg: str) -> dict:
-    return {"text": (msg or "")[:4000], "actionResponse": {"type": "NEW_MESSAGE"}}
+def _text_resp(msg: str, *, update: bool = False) -> dict:
+    return {"text": (msg or "")[:4000],
+            "actionResponse": {"type": "UPDATE_MESSAGE" if update else "NEW_MESSAGE"}}
+
+
+# Fixed card actions for the confirm-first protocol. The card's CONTENT is the
+# agent's own reply (the message text above the card); only the two actions are
+# fixed, so the deal is closed by a deterministic endpoint hit — never by the
+# LLM parsing "yes". Bare function names here: the sync add-on path
+# (wrap_addon_response) and the async REST path (rewrite_card_buttons) both
+# rewrite them to the full-URL form pointing at the invoice-chat endpoint, which
+# comes back as action.actionMethodName on CARD_CLICKED.
+_CONFIRM_ACTION = "invchat_confirm"
+_CANCEL_ACTION = "invchat_cancel"
+
+
+def _confirm_card() -> list:
+    return [{
+        "cardId": "invchat_pending",
+        "card": {"sections": [{"widgets": [{"buttonList": {"buttons": [
+            {"text": "✅ Confirm", "onClick": {"action": {"function": _CONFIRM_ACTION}}},
+            {"text": "❌ Cancel", "onClick": {"action": {"function": _CANCEL_ACTION}}},
+        ]}}]}]},
+    }]
 
 
 async def handle_invoice_chat_event(event: dict) -> dict:
@@ -243,6 +275,7 @@ async def handle_invoice_chat_event(event: dict) -> dict:
     is_addon = "chat" in event
     ev = normalize_addon_event(event) if is_addon else event
     space_name = (ev.get("space") or {}).get("name") or ""
+    thread_name = (((ev.get("message") or {}).get("thread") or {}).get("name") or "")
     etype = ev.get("type")
     log.info("[inv:gc] inbound type=%s space=%s user=%s",
              etype, space_name, (ev.get("user") or {}).get("email"))
@@ -259,11 +292,11 @@ async def handle_invoice_chat_event(event: dict) -> dict:
         (os.getenv("GCHAT_ASYNC", "on") or "on").lower() == "on"
         and bool(space_name)
         and can_post
-        and etype == "MESSAGE"
+        and etype in ("MESSAGE", "CARD_CLICKED")
     )
     if not async_enabled:
         resp = await _run()
-        return wrap_addon_response(resp) if is_addon else resp
+        return wrap_addon_response(resp, endpoint_url=config.GOOGLE_CHAT_INVCHAT_ENDPOINT_URL) if is_addon else resp
 
     holder: dict = {}
     finished = asyncio.Event()
@@ -276,7 +309,7 @@ async def handle_invoice_chat_event(event: dict) -> dict:
     try:
         await asyncio.wait_for(asyncio.shield(finished.wait()), timeout=_ACK_DEADLINE)
         resp = holder["resp"]
-        return wrap_addon_response(resp) if is_addon else resp
+        return wrap_addon_response(resp, endpoint_url=config.GOOGLE_CHAT_INVCHAT_ENDPOINT_URL) if is_addon else resp
     except asyncio.TimeoutError:
         pass
 
@@ -285,12 +318,19 @@ async def handle_invoice_chat_event(event: dict) -> dict:
 
     async def _post_when_ready():
         await finished.wait()
-        body = {k: v for k, v in holder.get("resp", {}).items() if k == "text" and v}
+        body = {k: v for k, v in holder.get("resp", {}).items()
+                if k in ("text", "cardsV2") and v}
+        if body.get("cardsV2"):
+            # REST-posted buttons need the full-URL add-on form (bare function
+            # names only work in a synchronous interaction response).
+            rewrite_card_buttons(body["cardsV2"], endpoint_url=config.GOOGLE_CHAT_INVCHAT_ENDPOINT_URL)
+        if body and thread_name:
+            body["thread"] = {"name": thread_name}
         await _post_message_to_space(space_name, body)
 
     asyncio.create_task(_post_when_ready())
     ack = _text_resp("⏳ Working on it — I'll post the result here in a moment.")
-    return wrap_addon_response(ack) if is_addon else ack
+    return wrap_addon_response(ack, endpoint_url=config.GOOGLE_CHAT_INVCHAT_ENDPOINT_URL) if is_addon else ack
 
 
 async def _route(ev: dict) -> dict:
@@ -310,12 +350,17 @@ async def _route(ev: dict) -> dict:
     if etype == "REMOVED_FROM_SPACE":
         return {"text": ""}
 
-    if etype != "MESSAGE":
+    if etype not in ("MESSAGE", "CARD_CLICKED"):
         return _text_resp("Unknown event type.")
 
     if not _is_authorized(email):
-        log.warning("[inv:gc] unauthorized actor %r blocked", email)
-        return _text_resp("You're not authorized to act on invoicing.")
+        log.warning("[inv:gc] unauthorized actor %r blocked on %s", email, etype)
+        return _text_resp("You're not authorized to act on invoicing.",
+                          update=(etype == "CARD_CLICKED"))
+
+    if etype == "CARD_CLICKED":
+        async with _lock_for(space_name):
+            return await _handle_click(ev, decided_by)
 
     message_name = (ev.get("message", {}) or {}).get("name", "")
     async with _lock_for(space_name):
@@ -323,6 +368,49 @@ async def _route(ev: dict) -> dict:
             log.info("[inv:gc] dropping duplicate/retried MESSAGE %s", message_name)
             return {"text": ""}
         return await _handle_message(ev, decided_by)
+
+
+async def _handle_click(ev: dict, decided_by: str) -> dict:
+    """A tap on the confirm-card. Deterministic by design: the fixed action name
+    routes straight to confirm/cancel_pending_action — the same executor the
+    typed-"yes" path uses — with NO LLM in the loop. The pending store is keyed
+    by approver, so a tap only ever fires an action that same person staged; a
+    retried/late tap finds nothing pending and reports that harmlessly (invoice
+    creation is further deduped by the staged idempotency key at Square)."""
+    action = ((ev.get("action") or {}).get("actionMethodName") or "").strip()
+    if action not in (_CONFIRM_ACTION, _CANCEL_ACTION):
+        return _text_resp("Unrecognized action.", update=True)
+
+    from vertex_agent.invoice_chat_actions import (
+        cancel_pending_action,
+        confirm_pending_action,
+        set_current_user,
+    )
+    from vertex_agent.invoice_chat_memory import case_key, record_turn
+
+    def _act() -> str:
+        # Same-thread contextvar set → the pending store looks up THIS approver.
+        set_current_user(decided_by)
+        if action == _CONFIRM_ACTION:
+            return confirm_pending_action()
+        return cancel_pending_action()
+
+    outcome = await asyncio.to_thread(_act)
+
+    # Keep the case transcript coherent: the tap and its outcome become turns,
+    # so a follow-up message ("now send it") still sees what just happened.
+    case = case_key(
+        space=((ev.get("space") or {}).get("name") or ""),
+        user=((ev.get("user") or {}).get("email") or ""),
+    )
+    if case:
+        tapped = "Confirm" if action == _CONFIRM_ACTION else "Cancel"
+        record_turn(case, "staff", f"[tapped {tapped} on the staged action]")
+        record_turn(case, "assistant", outcome)
+
+    # UPDATE_MESSAGE replaces the card message with the outcome — the buttons
+    # disappear, so the same card can't be tapped twice.
+    return _text_resp(outcome, update=True)
 
 
 async def _handle_message(ev: dict, decided_by: str) -> dict:
@@ -351,6 +439,18 @@ async def _handle_message(ev: dict, decided_by: str) -> dict:
     if not text:
         return {"text": ""}
 
+    from vertex_agent.invoice_chat_actions import peek_pending
     from vertex_agent.invoice_chat_agent import discuss
+
+    before = peek_pending(decided_by)
     reply = await asyncio.to_thread(discuss, text, user=decided_by, case=case)
-    return _text_resp(reply or "I couldn't work that out — try rephrasing?")
+    resp = _text_resp(reply or "I couldn't work that out — try rephrasing?")
+
+    # If THIS turn staged (or re-staged) a confirm-first action, ship the fixed
+    # Confirm/Cancel buttons under the agent's reply. Detection is deterministic —
+    # the pending store changed — never inferred from the reply's wording. Typing
+    # "yes" keeps working; the card is the click path to the same executor.
+    after = peek_pending(decided_by)
+    if after and (before is None or after["ts"] != before["ts"]):
+        resp["cardsV2"] = _confirm_card()
+    return resp

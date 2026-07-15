@@ -1231,7 +1231,7 @@ def _exec_set_tier(name, fields) -> str:
 # ── execution: create / send Square invoice ───────────────────────────────────
 
 def _exec_invoice(customer_name, customer_email, tier, items_json, payment_schedule, shipping_cents=0, send=False, idem="") -> str:
-    from services import square_service
+    from services.tool_registry import ToolError, tool_registry
 
     quote = _quote(tier, items_json)
     if quote.get("error"):
@@ -1240,25 +1240,49 @@ def _exec_invoice(customer_name, customer_email, tier, items_json, payment_sched
     # Deterministic idempotency base so a retried confirm dedupes at Square instead
     # of creating a duplicate customer/order/invoice.
     ik = idem or uuid.uuid4().hex
+    case_id = f"invchat:{_user()}"
 
-    cust = square_service.get_or_create_square_customer(
-        customer_email, customer_name, idempotency_key=f"{ik}-cust"[:45])
-    if cust.get("error"):
-        return f"Couldn't set up the Square customer — {cust['error']}"
+    try:
+        cust = tool_registry.dispatch(
+            "square_create_customer",
+            {
+                "email": customer_email,
+                "full_name": customer_name,
+                "idempotency_key": f"{ik}-cust"[:45],
+            },
+            case_id=case_id,
+        )
+    except ToolError as exc:
+        return f"Couldn't set up the Square customer — {exc.reason}"
 
-    order = square_service.create_order(
-        customer_name, line_items, idempotency_key=f"{ik}-order"[:45],
-        shipping_cents=shipping_cents or 0)
-    if order.get("error"):
-        return f"Couldn't create the Square order — {order['error']}"
+    try:
+        order = tool_registry.dispatch(
+            "square_create_order",
+            {
+                "customer_name": customer_name,
+                "line_items": line_items,
+                "idempotency_key": f"{ik}-order"[:45],
+                "shipping_cents": shipping_cents or 0,
+            },
+            case_id=case_id,
+        )
+    except ToolError as exc:
+        return f"Couldn't create the Square order — {exc.reason}"
 
-    draft = square_service.create_invoice_draft(
-        order["order_id"], cust["customer_id"],
-        message=f"{tier} pricing.", payment_schedule=payment_schedule,
-        idempotency_key=f"{ik}-draft"[:45],
-    )
-    if draft.get("error"):
-        return f"Couldn't create the invoice draft — {draft['error']}"
+    try:
+        draft = tool_registry.dispatch(
+            "square_create_invoice_draft",
+            {
+                "order_id": order["order_id"],
+                "customer_id": cust["customer_id"],
+                "message": f"{tier} pricing.",
+                "payment_schedule": payment_schedule,
+                "idempotency_key": f"{ik}-draft"[:45],
+            },
+            case_id=case_id,
+        )
+    except ToolError as exc:
+        return f"Couldn't create the invoice draft — {exc.reason}"
 
     _log_invoice_best_effort(customer_name, customer_email, tier, line_items, quote, draft, send, shipping_cents)
 
@@ -1268,10 +1292,18 @@ def _exec_invoice(customer_name, customer_email, tier, items_json, payment_sched
                 f"Invoice {draft.get('invoice_number') or draft['invoice_id']}. "
                 f"Say *send it* when you want it published to the customer.")
 
-    pub = square_service.publish_invoice(
-        draft["invoice_id"], draft.get("invoice_version", 0), idempotency_key=f"{ik}-pub"[:45])
-    if pub.get("error"):
-        return (f"Draft created, but publishing failed — {pub['error']}. "
+    try:
+        pub = tool_registry.dispatch(
+            "square_publish_invoice",
+            {
+                "invoice_id": draft["invoice_id"],
+                "invoice_version": draft.get("invoice_version", 0),
+                "idempotency_key": f"{ik}-pub"[:45],
+            },
+            case_id=case_id,
+        )
+    except ToolError as exc:
+        return (f"Draft created, but publishing failed — {exc.reason}. "
                 f"The draft is saved (invoice {draft.get('invoice_number') or draft['invoice_id']}).")
     url = pub.get("public_url")
     total = _money((quote.get("total_cents") or 0) + (shipping_cents or 0))
@@ -1282,11 +1314,17 @@ def _exec_invoice(customer_name, customer_email, tier, items_json, payment_sched
 def _exec_send_existing(invoice_id, customer_name="", idem="") -> str:
     """Publish an existing Square draft after the user's yes. Re-fetches the
     invoice for its current version (Square rejects stale-version publishes)."""
-    from services import square_service
+    from services.tool_registry import ToolError, tool_registry
 
-    inv = square_service.get_invoice(invoice_id)
-    if inv.get("error"):
-        return f"Couldn't fetch the draft — {inv['error']}"
+    case_id = f"invchat:{_user()}"
+    try:
+        inv = tool_registry.dispatch(
+            "square_get_invoice",
+            {"invoice_id": invoice_id},
+            case_id=case_id,
+        )
+    except ToolError as exc:
+        return f"Couldn't fetch the draft — {exc.reason}"
     label = inv.get("invoice_number") or invoice_id
     status = (inv.get("status") or "").upper()
     if status != "DRAFT":
@@ -1294,11 +1332,18 @@ def _exec_send_existing(invoice_id, customer_name="", idem="") -> str:
         return (f"Invoice {label} is {status or 'in an unknown state'} now — nothing sent."
                 + (f"\nPayment link: {url}" if url else ""))
 
-    pub = square_service.publish_invoice(
-        invoice_id, invoice_version=inv.get("version") or 0,
-        idempotency_key=f"{idem}-pub"[:45])
-    if pub.get("error"):
-        return f"Publishing failed — {pub['error']}. The draft is untouched."
+    try:
+        pub = tool_registry.dispatch(
+            "square_publish_invoice",
+            {
+                "invoice_id": invoice_id,
+                "invoice_version": inv.get("version") or 0,
+                "idempotency_key": f"{idem}-pub"[:45],
+            },
+            case_id=case_id,
+        )
+    except ToolError as exc:
+        return f"Publishing failed — {exc.reason}. The draft is untouched."
     url = pub.get("public_url")
     who = f" to {customer_name}" if customer_name else ""
     total = _money(inv.get("total_money_cents"))

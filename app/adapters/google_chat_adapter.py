@@ -21,6 +21,7 @@ import logging
 import os
 import httpx
 from langgraph.types import Command
+from app import config
 from agents.invoice_graph import invoice_graph, checkpointer
 from services.gateway import NormalizedMessage, gateway
 from services.invoice_interrupts import (
@@ -93,7 +94,7 @@ def _to_message_body(resp: dict) -> dict:
     if body.get("cardsV2"):
         try:
             from app.adapters.gchat_format import rewrite_card_buttons
-            rewrite_card_buttons(body["cardsV2"])
+            rewrite_card_buttons(body["cardsV2"], endpoint_url=config.GOOGLE_CHAT_GRAPH_ENDPOINT_URL)
         except Exception:
             pass
     return body
@@ -117,6 +118,10 @@ async def _post_message_to_space(space_name: str, body: dict) -> bool:
         creds = service_account.Credentials.from_service_account_info(sa, scopes=_CHAT_APP_SCOPES)
         await asyncio.to_thread(creds.refresh, _GReq())
         url = f"https://chat.googleapis.com/v1/{space_name}/messages"
+        if body.get("thread"):
+            # Reply into the originating thread; in a flat ("conversation view")
+            # space Chat ignores the thread and posts normally instead of erroring.
+            url += "?messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD"
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(
                 url, headers={"Authorization": f"Bearer {creds.token}"}, json=body
@@ -607,6 +612,7 @@ async def handle_google_chat_event(event: dict) -> dict:
     if is_addon:
         log.info("[gc:addon] normalizing Workspace Add-on event")
     space_name = (ev.get("space") or {}).get("name") or ""
+    thread_name = (((ev.get("message") or {}).get("thread") or {}).get("name") or "")
     etype = ev.get("type")
     async_enabled = (
         (os.getenv("GCHAT_ASYNC", "on") or "on").lower() == "on"
@@ -623,7 +629,7 @@ async def handle_google_chat_event(event: dict) -> dict:
 
     if not async_enabled:
         resp = await _run()
-        return _wrap_addon_response(resp) if is_addon else resp
+        return _wrap_addon_response(resp, endpoint_url=config.GOOGLE_CHAT_GRAPH_ENDPOINT_URL) if is_addon else resp
 
     # Compute in the background; deliver sync if fast, else ack + post async.
     holder: dict = {}
@@ -637,7 +643,7 @@ async def handle_google_chat_event(event: dict) -> dict:
     try:
         await asyncio.wait_for(asyncio.shield(finished.wait()), timeout=_ACK_DEADLINE)
         resp = holder["resp"]                       # finished in time → sync result
-        return _wrap_addon_response(resp) if is_addon else resp
+        return _wrap_addon_response(resp, endpoint_url=config.GOOGLE_CHAT_GRAPH_ENDPOINT_URL) if is_addon else resp
     except asyncio.TimeoutError:
         pass
 
@@ -647,11 +653,14 @@ async def handle_google_chat_event(event: dict) -> dict:
 
     async def _post_when_ready():
         await finished.wait()
-        await _post_message_to_space(space_name, _to_message_body(holder.get("resp", {})))
+        body = _to_message_body(holder.get("resp", {}))
+        if body and thread_name:
+            body["thread"] = {"name": thread_name}
+        await _post_message_to_space(space_name, body)
 
     asyncio.create_task(_post_when_ready())
     ack = _text("⏳ Working on it — I'll post the result here in a moment.")
-    return _wrap_addon_response(ack) if is_addon else ack
+    return _wrap_addon_response(ack, endpoint_url=config.GOOGLE_CHAT_GRAPH_ENDPOINT_URL) if is_addon else ack
 
 
 async def _route_event(event: dict) -> dict:
