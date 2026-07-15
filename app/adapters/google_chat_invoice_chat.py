@@ -118,6 +118,10 @@ def _post_message_sync(space_name: str, body: dict) -> bool:
     if not token or not space_name or not body:
         return False
     url = f"https://chat.googleapis.com/v1/{space_name}/messages"
+    if body.get("thread"):
+        # Reply into the originating thread; in a flat ("conversation view")
+        # space Chat ignores the thread and posts normally instead of erroring.
+        url += "?messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD"
     try:
         with httpx.Client(timeout=30) as client:
             r = client.post(url, headers={"Authorization": f"Bearer {token}"}, json=body)
@@ -243,6 +247,7 @@ async def handle_invoice_chat_event(event: dict) -> dict:
     is_addon = "chat" in event
     ev = normalize_addon_event(event) if is_addon else event
     space_name = (ev.get("space") or {}).get("name") or ""
+    thread_name = (((ev.get("message") or {}).get("thread") or {}).get("name") or "")
     etype = ev.get("type")
     log.info("[inv:gc] inbound type=%s space=%s user=%s",
              etype, space_name, (ev.get("user") or {}).get("email"))
@@ -286,6 +291,8 @@ async def handle_invoice_chat_event(event: dict) -> dict:
     async def _post_when_ready():
         await finished.wait()
         body = {k: v for k, v in holder.get("resp", {}).items() if k == "text" and v}
+        if body and thread_name:
+            body["thread"] = {"name": thread_name}
         await _post_message_to_space(space_name, body)
 
     asyncio.create_task(_post_when_ready())

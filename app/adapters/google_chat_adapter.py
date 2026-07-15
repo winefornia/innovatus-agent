@@ -117,6 +117,10 @@ async def _post_message_to_space(space_name: str, body: dict) -> bool:
         creds = service_account.Credentials.from_service_account_info(sa, scopes=_CHAT_APP_SCOPES)
         await asyncio.to_thread(creds.refresh, _GReq())
         url = f"https://chat.googleapis.com/v1/{space_name}/messages"
+        if body.get("thread"):
+            # Reply into the originating thread; in a flat ("conversation view")
+            # space Chat ignores the thread and posts normally instead of erroring.
+            url += "?messageReplyOption=REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD"
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.post(
                 url, headers={"Authorization": f"Bearer {creds.token}"}, json=body
@@ -607,6 +611,7 @@ async def handle_google_chat_event(event: dict) -> dict:
     if is_addon:
         log.info("[gc:addon] normalizing Workspace Add-on event")
     space_name = (ev.get("space") or {}).get("name") or ""
+    thread_name = (((ev.get("message") or {}).get("thread") or {}).get("name") or "")
     etype = ev.get("type")
     async_enabled = (
         (os.getenv("GCHAT_ASYNC", "on") or "on").lower() == "on"
@@ -647,7 +652,10 @@ async def handle_google_chat_event(event: dict) -> dict:
 
     async def _post_when_ready():
         await finished.wait()
-        await _post_message_to_space(space_name, _to_message_body(holder.get("resp", {})))
+        body = _to_message_body(holder.get("resp", {}))
+        if body and thread_name:
+            body["thread"] = {"name": thread_name}
+        await _post_message_to_space(space_name, body)
 
     asyncio.create_task(_post_when_ready())
     ack = _text("⏳ Working on it — I'll post the result here in a moment.")
