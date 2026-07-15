@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /Users/jeonghaein/development/innovatus-agent log --format=\"%h %ad %s\" --date=iso -S calendar_event_id -- db/repository.py)",
+      "mcp__claude_ai_Gmail__search_threads",
+      "Bash(curl -sS -X POST https://winefornia-agent.fly.dev/webhooks/gmail/tastingroom/poll --max-time 180)",
+      "Bash(python3 -m json.tool)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('count:', d.get\\('count'\\)\\); print\\('query:', d.get\\('query'\\)\\); [print\\(p.get\\('message_id'\\), p.get\\('status'\\), p.get\\('reason'\\) or p.get\\('state',''\\)\\) for p in d.get\\('processed', []\\)]\")"
+    ]
+  }
+}

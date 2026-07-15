@@ -42,6 +42,10 @@ invoice is drafted/sent or you cancel. Practical consequences:
 - Coming back later works: say *"send Christina's invoice"* days after
   drafting — it finds the draft in the records and in Square itself, so this
   works even after a server restart.
+- Replies stay in the thread. If you ask in a thread, the answer comes back
+  in that same thread — including when the assistant says *"working on it"*
+  first and posts the real answer a moment later. In a space without threads
+  it simply posts normally.
 
 ### Money is always confirm-first
 
@@ -77,6 +81,15 @@ The validator runs every minute. Square mail that matches no known invoice
 **Invoice Validation/Unmatched** in Gmail for a human to glance at. Ask the
 assistant for *recent invoices* any time — each one shows its verification
 state, so "still open" is always visible.
+
+### Checking on the system from Claude
+
+Besides Google Chat, the invoice pipeline has a **read-only console for
+Claude** (claude.ai custom connector or Claude Code): recent invoices, open
+cases, per-case traces, staged-but-unconfirmed actions, and watcher health.
+It can look at everything and change nothing — money and outbound email stay
+behind the Chat confirm-first flow. It's off until the `MCP_INVOICE_SECRET`
+secret is set, and denies everything without it.
 
 ---
 

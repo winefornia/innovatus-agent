@@ -120,10 +120,15 @@ Both share one core design philosophy: **a deterministic brain owns every real-w
 ### `app/` — HTTP layer & static data
 | File | Role |
 |---|---|
-| `main.py` | FastAPI server: `/webhooks/google-chat` (+ `/invoice-chat`, `/tastingroom`), `/webhooks/gmail/tastingroom/poll`, `/invoices/recent`, `/reservations/recent`, `/activity`, `/health`. |
+| `main.py` | FastAPI server: `/webhooks/google-chat` (default = invoicing assistant), `/webhooks/google-chat/graph` (legacy wizard), `/webhooks/google-chat/tastingroom`, `/webhooks/gmail/tastingroom/poll` + `/webhooks/gmail/invoice-validation/poll`, `/mcp/invoice`, `/invoices/recent`, `/reservations/recent`, `/activity`, `/health`. |
 | `config.py` | Env var loader (API keys, tokens, Supabase, Mem0, safe-mode/prod flags, authorized accounts). |
 | `schemas.py` | Pydantic models: `LineItem`, `InvoiceDraft`. |
+| `mcp_invoice.py` | Read-only MCP operator console for Claude (recent invoices, cases, traces, staged actions, watcher health). Fail-closed: denies everything unless `MCP_INVOICE_SECRET` is set. |
 | `adapters/google_chat_adapter.py` | Google Chat front-end for the invoice wizard (cards, wizards, stale-click guards). |
+| `adapters/google_chat_invoice_chat.py` | Google Chat front-end for the conversational invoicing assistant (default): ack-then-post, dedup, auth gate, PDF digest. |
+| `adapters/google_chat_tastingroom.py` | Google Chat front-end for tasting-room approval cards + staff chat. |
+
+Async ("⏳ working on it") results from both Chat adapters post back **into the originating thread** (`REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD` — flat spaces get a normal message instead of an error).
 | `data/*.json` | `product_catalog.json` (SKUs + MSRP), `customers.json` (PII, gitignored), `pricing_tiers.json` (tier multipliers), `approval_log.json` (audit). |
 
 ### `db/` — Persistence & evaluation
@@ -190,6 +195,7 @@ LangGraph · Claude API (Haiku for extraction/composition, Sonnet for judgment/p
 - **Failure labeling** — production failures are categorized by type, severity, and responsible layer for human review.
 - **Regression eval suite** — golden, edge-case, regression, and adversarial scenarios guard against regressions; production failures can become new eval cases.
 - **Activity dashboard** — operators review recent invoices and reservations via the /activity web page, in Pacific time.
+- **MCP operator console** — Claude (claude.ai connector or Claude Code) can read recent invoices, open cases, per-case traces, staged actions, and watcher health over `/mcp/invoice`; strictly read-only and fail-closed.
 
 ## E. Learning & Memory
 - **Per-operator skill memory** — accumulates facts about how each operator works.
@@ -199,5 +205,5 @@ LangGraph · Claude API (Haiku for extraction/composition, Sonnet for judgment/p
 - **System integrations** — Square (invoicing), Gmail (intake + sending), Supabase/PostgreSQL (system of record), Mem0 (memory), Google Chat (staff interface), Claude (AI).
 - **Data sync** — scheduled Square → Supabase sync (customers, orders, invoices) with cursor-based incremental updates.
 - **Stable Gmail auth** — Google Workspace domain-wide delegation for server-side mailbox access (no fragile per-user refresh tokens).
-- **Deployment** — Fly.io with four supervised processes (web, invoice bot, tasting room bot, mail watcher); Docker-packaged; secrets via Fly.
+- **Deployment** — Fly.io with two processes (`web` FastAPI server, `tastingroom_watcher` mail poller); Docker-packaged; secrets via Fly.
 - **Replay & shadow tooling** — historical cases can be replayed through the agent in dry-run/shadow mode for testing without side effects.
