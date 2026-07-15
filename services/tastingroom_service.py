@@ -95,6 +95,24 @@ def _email_only(value: str) -> str:
     return parseaddr(value or "")[1].lower()
 
 
+# The winery's own sending identities. Mail FROM these that doesn't match a
+# structured type below is a STAFF MANUAL REPLY (e.g. Audrey answering a client
+# directly in Gmail) — it must be tracked on the case, never mistaken for a
+# client message, and never quarantined as "unclassified".
+_WINERY_SELF_DOMAINS = {"innovatuswine.com", "winefornia.com"}
+
+
+def _is_winery_self_email(sender_email: str) -> bool:
+    email = (sender_email or "").strip().lower()
+    if not email:
+        return False
+    for var in ("GOOGLE_DELEGATED_USER_EMAIL", "GOOGLE_ACCOUNT_EMAIL"):
+        if email == (os.getenv(var) or "").strip().lower():
+            return True
+    domain = email.rsplit("@", 1)[-1]
+    return domain in _WINERY_SELF_DOMAINS
+
+
 def _clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
 
@@ -328,6 +346,13 @@ def classify_email(subject: str, sender: str, body: str) -> str:
         "would you like" in text or "let me know if you" in text
     ):
         return "staff_slot_offer"
+    # Any remaining mail FROM the winery itself is a staff member replying
+    # manually (out of band). Classify it BEFORE the client-type heuristics:
+    # a manual reply that says "invoice"/"thank you" must not be mistaken for a
+    # Square payment notification or a client message (that corrupted
+    # client_email and queued wrong next-actions — Paige Kim case, July 2026).
+    if _is_winery_self_email(sender_email):
+        return "staff_manual_reply"
     if "invoice" in text and any(word in text for word in ("paid", "payment", "prepayment", "link", "created")):
         return "invoice_payment_message"
     if any(phrase in text for phrase in ("please reserve", "would like to book", "yes", "that works", "reserve that time")):
@@ -367,6 +392,17 @@ def extract_email_facts(subject: str, sender: str, body: str, message_type: str)
                 facts["payment_status"] = "paid"
             elif "created invoice" in lowered or "sent an invoice" in lowered:
                 facts["payment_status"] = "sent"
+        if message_type == "staff_manual_reply":
+            lowered = latest.lower()
+            # A Square pay-invoice link (or "attached an/the invoice") in the
+            # winery's own mail is deterministic evidence a deposit invoice went
+            # out, even though it was sent by hand outside the system.
+            if ("app.squareup.com/pay-invoice" in lowered
+                    or "attached an invoice" in lowered or "attached the invoice" in lowered):
+                facts["payment_status"] = "sent"
+            if re.search(r"\breleased\b", lowered) and any(
+                    w in lowered for w in ("reservation", "hold", "held")):
+                facts["hold_released"] = True
         if message_type in {"client_alternative_request", "josh_availability_reply", "facility_booking_request", "facility_availability_request", "staff_slot_offer"}:
             slots = parse_dated_slot_lines(latest)
             date_matches = re.findall(r"\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b", latest)
@@ -749,6 +785,18 @@ def merge_reservation(existing: Optional[dict], reservation_id: str, facts: dict
     existing_date = (existing or {}).get("requested_date")
     existing_time = (existing or {}).get("requested_time")
 
+    # Payment status observed in the mail itself (Square notification, or a
+    # staff manual reply carrying the pay-invoice link). Forward-only: an email
+    # can move not_sent → sent → paid but never backwards, so re-ingesting old
+    # threads can't regress a paid case.
+    _payment_rank = {"not_sent": 0, "sent": 1, "paid": 2}
+    payment_status = (existing or {}).get("payment_status") or "not_sent"
+    observed_payment = facts.get("payment_status")
+    if (message_type in {"invoice_payment_message", "staff_manual_reply"}
+            and observed_payment in _payment_rank
+            and _payment_rank[observed_payment] > _payment_rank.get(payment_status, 0)):
+        payment_status = observed_payment
+
     return Reservation(
         reservation_id=reservation_id,
         client_name=facts.get("client_name") or (existing or {}).get("client_name"),
@@ -768,7 +816,7 @@ def merge_reservation(existing: Optional[dict], reservation_id: str, facts: dict
         experience_type=facts.get("experience_type") or (existing or {}).get("experience_type"),
         price_per_person_cents=facts.get("price_per_person_cents") or (existing or {}).get("price_per_person_cents"),
         current_state=(existing or {}).get("current_state") or "REQUEST_RECEIVED",
-        payment_status=(existing or {}).get("payment_status") or "not_sent",
+        payment_status=payment_status,
         booking_status=(existing or {}).get("booking_status") or "not_booked",
         gmail_thread_ids=thread_ids,
         active_slot=(existing or {}).get("active_slot") or {},
@@ -1220,6 +1268,13 @@ def _ensure_square_invoice(reservation_id: str, reservation: Optional[dict]) -> 
             "fields": fields,
         },
     ))
+    _record_execution_result(
+        reservation_id, "create_square_invoice", "", ok=True,
+        result_json={"invoice_id": fields["square_invoice_id"],
+                     "invoice_number": fields.get("square_invoice_number"),
+                     "total_cents": fields.get("square_invoice_total_cents")},
+        created_resource_id=fields["square_invoice_id"] or "",
+    )
     return fields
 
 
@@ -1546,6 +1601,14 @@ def process_action_decision(action_id: str, decision: str, decided_by: str = "go
                 "calendar_event": calendar_event,
             },
         ))
+        _record_execution_result(
+            reservation_id, action_type, action_id, ok=True,
+            result_json={"message_id": send_result.get("message_id"),
+                         "thread_id": send_result.get("thread_id"),
+                         "recipient": actual_recipient,
+                         "safe_mode": TASTINGROOM_SAFE_MODE},
+            created_resource_id=send_result.get("message_id") or "",
+        )
         updated = get_reservation(reservation_id)
         next_action_id = None
         if action_type == "send_tentative_invoice" and updated:
@@ -1559,7 +1622,47 @@ def process_action_decision(action_id: str, decision: str, decided_by: str = "go
         }
     except Exception as exc:
         update_reservation_action(action_id, status="failed")
+        # A failed approved send must be as visible in the case timeline as a
+        # successful one — the action's 'failed' status alone was invisible in
+        # reservation_events, so failures looked like nothing happened.
+        try:
+            insert_reservation_event(ReservationEvent(
+                reservation_id=reservation_id,
+                event_type="approved_email_send_failed",
+                actor=decided_by,
+                source_channel="google_chat",
+                source_message_id=action_id,
+                summary=f"FAILED to execute {action_type}: {str(exc)[:300]}",
+                raw_payload={"error": str(exc), "action": action},
+            ))
+        except Exception as evt_exc:
+            logging.warning("[tastingroom] failure event write failed: %s", evt_exc)
+        _record_execution_result(
+            reservation_id, action_type, action_id, ok=False,
+            error_type=type(exc).__name__, error_message=str(exc)[:500],
+        )
         return {"ok": False, "error": str(exc), "reservation_id": reservation_id}
+
+
+def _record_execution_result(reservation_id: str, tool_name: str, action_id: str, *,
+                             ok: bool, result_json: dict | None = None,
+                             error_type: str = "", error_message: str = "",
+                             created_resource_id: str = "") -> None:
+    """Durable per-action audit row (execution_results). Best-effort — the
+    insert itself already swallows DB errors, so this can never block a send."""
+    from db.models import ExecutionResultRecord
+    from db.repository import insert_execution_result
+
+    insert_execution_result(ExecutionResultRecord(
+        case_id=reservation_id,
+        tool_name=tool_name or "",
+        ok=ok,
+        action_request_id=action_id or "",
+        result_json=result_json or {},
+        error_type=error_type,
+        error_message=error_message,
+        created_resource_id=created_resource_id,
+    ))
 
 
 def _reservation_from_row(row: dict) -> Reservation:

@@ -204,6 +204,26 @@ create or replace trigger invoice_logs_updated_at
 
 
 -- ============================================================
+-- INVOICE CHAT TURNS (durable transcript of the invoice chat assistant)
+-- Written best-effort by vertex_agent/invoice_chat_memory.py; read for
+-- restart-safe case rehydration and months-later recall (past_conversations).
+-- Applied to Supabase 2026-07-15 (migration invoice_chat_turns).
+-- ============================================================
+
+create table if not exists invoice_chat_turns (
+    id          uuid primary key default gen_random_uuid(),
+    case_key    text not null,               -- space|sender, see invoice_chat_memory.case_key
+    user_id     text,
+    role        text not null,               -- staff | assistant
+    text        text not null,
+    created_at  timestamptz not null default now()
+);
+
+create index if not exists invoice_chat_turns_case_idx    on invoice_chat_turns (case_key, created_at desc);
+create index if not exists invoice_chat_turns_created_idx on invoice_chat_turns (created_at desc);
+
+
+-- ============================================================
 -- SYNC STATE (tracks last successful sync cursor per entity)
 -- ============================================================
 

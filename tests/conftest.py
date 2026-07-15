@@ -31,6 +31,21 @@ os.environ.setdefault("PRODUCTION_MODE", "false")
 
 
 # ---------------------------------------------------------------------------
+# invoice chat memory persists turns to Supabase best-effort; stub the durable
+# layer for EVERY test so record_turn/render_case stay hermetic (tests that
+# assert on persistence re-patch these explicitly).
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _hermetic_chat_turns(monkeypatch):
+    monkeypatch.setattr("db.repository.insert_chat_turn", lambda *a, **k: None)
+    monkeypatch.setattr("db.repository.list_chat_turns_for_case", lambda *a, **k: [])
+    monkeypatch.setattr("vertex_agent.invoice_chat_memory._persist_broken", False)
+    monkeypatch.setattr("vertex_agent.invoice_chat_memory._persist_failures", 0)
+    yield
+
+
+# ---------------------------------------------------------------------------
 # mock_square — patch square_service at the function level
 # ---------------------------------------------------------------------------
 

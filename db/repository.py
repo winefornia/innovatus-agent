@@ -212,6 +212,193 @@ def get_recent_invoice_for_customer(
 
 
 # ---------------------------------------------------------------------------
+# Per-customer history (synced Square data + agent invoice logs)
+#
+# square_invoices / square_orders are written by scripts/sync.py; these are the
+# runtime READ side, powering the invoice chat agent's client_history tools.
+# In the live data only ~40% of synced rows carry the customers.id uuid while
+# others carry only the raw square_customer_id, so matching must accept EITHER
+# key — an eq on one of them silently drops history.
+# ---------------------------------------------------------------------------
+
+def _match_customer(query, customer_id: Optional[str], square_customer_id: Optional[str]):
+    """Filter a square_* query by whichever customer keys we have (OR when both).
+    Returns None when there is nothing to match on."""
+    if customer_id and square_customer_id:
+        return query.or_(f"customer_id.eq.{customer_id},square_customer_id.eq.{square_customer_id}")
+    if customer_id:
+        return query.eq("customer_id", customer_id)
+    if square_customer_id:
+        return query.eq("square_customer_id", square_customer_id)
+    return None
+
+
+def list_square_invoices_for_customer(
+    customer_id: Optional[str] = None,
+    square_customer_id: Optional[str] = None,
+    limit: int = 20,
+) -> list[dict]:
+    """Historical Square invoices for one customer, newest first."""
+    client = _get_client()
+    query = client.table("square_invoices").select(
+        "square_invoice_id, square_order_id, invoice_number, title, status, "
+        "payment_schedule, total_money_cents, due_date, paid_at, invoice_created_at"
+    )
+    query = _match_customer(query, customer_id, square_customer_id)
+    if query is None:
+        return []
+    result = query.order("invoice_created_at", desc=True).limit(limit).execute()
+    return result.data or []
+
+
+def list_square_orders_for_customer(
+    customer_id: Optional[str] = None,
+    square_customer_id: Optional[str] = None,
+    limit: int = 20,
+) -> list[dict]:
+    """Historical Square orders (with line_items) for one customer, newest first."""
+    client = _get_client()
+    query = client.table("square_orders").select(
+        "square_order_id, state, total_money_cents, line_items, order_created_at"
+    )
+    query = _match_customer(query, customer_id, square_customer_id)
+    if query is None:
+        return []
+    result = query.order("order_created_at", desc=True).limit(limit).execute()
+    return result.data or []
+
+
+def get_square_orders_by_ids(order_ids: list[str]) -> list[dict]:
+    """Fetch square_orders rows by their Square order ids (for invoice→items joins)."""
+    ids = [i for i in (order_ids or []) if i]
+    if not ids:
+        return []
+    client = _get_client()
+    result = (
+        client.table("square_orders")
+        .select("square_order_id, state, total_money_cents, line_items, order_created_at")
+        .in_("square_order_id", ids)
+        .execute()
+    )
+    return result.data or []
+
+
+def list_invoice_logs_for_customer(
+    customer_name: Optional[str] = None,
+    customer_id: Optional[str] = None,
+    limit: int = 10,
+) -> list[dict]:
+    """Agent-created invoice logs for one customer, newest first.
+
+    The plural sibling of get_recent_invoice_for_customer — same matching rules.
+    """
+    if not customer_id and not customer_name:
+        return []
+    client = _get_client()
+    query = client.table("invoice_logs").select(
+        "thread_id, customer_name, customer_email, tier_name, line_items, "
+        "total_before_tax_cents, shipping_cents, payment_schedule, approval, "
+        "square_invoice_id, square_invoice_number, verification_status, created_at"
+    )
+    if customer_id:
+        query = query.eq("customer_id", customer_id)
+    else:
+        query = query.ilike("customer_name", f"%{customer_name}%")
+    result = query.order("created_at", desc=True).limit(limit).execute()
+    return result.data or []
+
+
+def update_customer_fields(customer_id: str, fields: dict) -> bool:
+    """Update one customers row (by uuid). Returns True if a row was touched.
+
+    The write side of the invoice chat agent's stage_update_client — tier,
+    contact info, notes. Caller validates the fields; this just persists.
+    """
+    if not customer_id or not fields:
+        return False
+    client = _get_client()
+    result = client.table("customers").update(fields).eq("id", customer_id).execute()
+    return bool(result.data)
+
+
+# ---------------------------------------------------------------------------
+# Invoice chat transcript (durable memory for the invoice chat assistant)
+#
+# invoice_chat_memory keeps a fast in-process rolling window; these rows are
+# the durable copy — they survive restarts (rehydration) and power the
+# months-later past_conversations recall tool.
+# ---------------------------------------------------------------------------
+
+def insert_chat_turn(case_key: str, role: str, text: str, user_id: str = "") -> None:
+    """Append one side of an invoice-chat exchange to the durable transcript."""
+    client = _get_client()
+    client.table("invoice_chat_turns").insert({
+        "case_key": case_key,
+        "user_id": user_id or None,
+        "role": role,
+        "text": text,
+    }).execute()
+
+
+def list_chat_turns_for_case(case_key: str, limit: int = 16) -> list[dict]:
+    """The newest `limit` turns for one case, returned oldest-first."""
+    if not case_key:
+        return []
+    client = _get_client()
+    result = (
+        client.table("invoice_chat_turns")
+        .select("role, text, created_at")
+        .eq("case_key", case_key)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return list(reversed(result.data or []))
+
+
+def search_chat_turns(query_text: str, limit: int = 20) -> list[dict]:
+    """Case-insensitive substring search over the durable chat transcript,
+    newest first — powers "what did we discuss about X months ago?"."""
+    q = (query_text or "").strip()
+    if not q:
+        return []
+    client = _get_client()
+    result = (
+        client.table("invoice_chat_turns")
+        .select("case_key, role, text, created_at")
+        .ilike("text", f"%{q}%")
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return result.data or []
+
+
+def list_reservations_for_client(
+    client_name: Optional[str] = None,
+    client_email: Optional[str] = None,
+    limit: int = 10,
+) -> list[dict]:
+    """Tasting-room reservations for one client, newest first. READ-ONLY —
+    the invoice chat agent may look at bookings but never touches the
+    tasting-room pipeline (Hard Rule 2 governs case intake, not reads)."""
+    if not client_name and not client_email:
+        return []
+    client = _get_client()
+    query = client.table("reservations").select(
+        "reservation_id, client_name, client_email, requested_date, requested_time, "
+        "guest_count, experience_type, current_state, payment_status, booking_status, "
+        "square_invoice_number, square_invoice_status, notes, created_at, updated_at"
+    ).not_.like("reservation_id", "TASTING-SMOKE-%")
+    if client_email:
+        query = query.ilike("client_email", client_email.strip())
+    else:
+        query = query.ilike("client_name", f"%{client_name}%")
+    result = query.order("updated_at", desc=True).limit(limit).execute()
+    return result.data or []
+
+
+# ---------------------------------------------------------------------------
 # Tasting room reservations
 # ---------------------------------------------------------------------------
 

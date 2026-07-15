@@ -79,6 +79,9 @@ def intake_email(*, subject: str, sender: str, body: str, to_email: str = "",
     if is_new and not form_with_identity:
         if message_type == "squarespace_form":
             reason = "Website form submission with no client name or email — needs a human look."
+        elif message_type == "staff_manual_reply":
+            reason = ("The winery's own (manual) email matched no existing reservation. "
+                      "Recorded for review — staff mail never opens a new case.")
         else:
             reason = (f"'{message_type}' email matched no existing reservation; only website form "
                       f"submissions open a new case, so this is quarantined for review.")
@@ -284,6 +287,15 @@ def coordinate_email(*, subject: str, sender: str, body: str, to_email: str = ""
                 "reservation_id": None}
 
     rid = info["reservation_id"]
+    # Staff replying manually means a human is already driving this case.
+    # Record it (intake_email persisted the event + any observed facts) but do
+    # NOT auto-coordinate: proposing next steps off the winery's own outbound
+    # mail produced wrong cards (offering a slot the staff had just released).
+    if info.get("message_type") == "staff_manual_reply":
+        return {"status": "staff_manual", "reservation_id": rid,
+                "message_type": "staff_manual_reply",
+                "experience_type": info.get("experience_type"),
+                "proposed_action": None}
     result = coordinate_reservation(rid)
     result["message_type"] = info.get("message_type")
     result["experience_type"] = info.get("experience_type")

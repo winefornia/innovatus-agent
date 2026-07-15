@@ -70,6 +70,24 @@ shared invoice key, so a single-project setup works without a new bot.
 - `list_tiers()` — pricing tiers, discount %, multiplier.
 - `recent_invoices(limit)` — recent invoices and status.
 - `price_order(...)` — a priced quote; nothing created.
+- `client_lookup(customer)` — a client's profile: contact info, pricing tier,
+  type, notes (from the `customers` table).
+- `client_history(customer, limit)` — the client's past invoices and orders:
+  dates, totals, paid status, items. Reads the synced Square history
+  (`square_invoices` + `square_orders`, falling back to orders alone when the
+  invoice sync has gaps) plus recent agent-created `invoice_logs`.
+- `usual_order(customer)` — the client's usual (most recent) order, re-priced
+  at today's prices for their tier — powers recommendations and "same as usual".
+- `client_notes(customer)` — remembered facts about a client (preferences,
+  watch-outs) from Mem0 skill memory + the profile's notes field.
+- `past_conversations(query, limit)` — search the durable transcript of this
+  assistant's own past chats (`invoice_chat_turns`), even months back. The
+  in-process rolling memory is now also persisted there and rehydrated after a
+  restart, so a mid-order restart no longer loses context.
+- `client_reservations(customer, limit)` — the client's tasting-room bookings
+  (Squarespace pipeline), strictly read-only. Booking changes stay with the
+  tasting-room assistant (Hard Rule 2 — pipelines never mix cases; this is a
+  read-only view).
 
 **Act (confirm-first):**
 
@@ -83,6 +101,9 @@ shared invoice key, so a single-project setup works without a new bot.
 - `stage_invoice(customer, email, tier, items, schedule, send)` — create (and
   optionally send) a Square invoice. `send=true` only when staff clearly want it
   sent; otherwise it's a draft.
+- `stage_update_client(customer, tier, email, phone, add_note)` — update a
+  client's profile in the `customers` table: assign/change pricing tier
+  (validated against the tier list), fix contact info, or append a note.
 
 ---
 
