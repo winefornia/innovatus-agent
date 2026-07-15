@@ -448,6 +448,110 @@ create table if not exists chat_pending_actions (
 
 
 -- ============================================================
+-- CONTROL / EVAL LAYER (raw mail archive, guardrail + execution audit,
+-- LLM judgments, workflow records, quarantined intake)
+-- ============================================================
+-- These tables were originally created directly on the project; the
+-- definitions below are transcribed from the live database (July 2026) so
+-- this file is a complete source of truth. All idempotent.
+
+-- raw_email_events: archive of every mail the watcher fetched, before any
+-- classification — the "nothing is ever lost" table.
+create table if not exists raw_email_events (
+    event_id          uuid primary key default gen_random_uuid(),
+    gmail_message_id  text not null unique,
+    gmail_thread_id   text,
+    subject           text,
+    from_email        text,
+    to_email          text,
+    body              text,
+    raw_payload       jsonb default '{}'::jsonb,
+    ingested_at       timestamptz default now()
+);
+
+-- unresolved_reservation_events: quarantine pile — mail that reached the
+-- tasting-room intake but could not be resolved into a reservation.
+create table if not exists unresolved_reservation_events (
+    event_id           uuid primary key default gen_random_uuid(),
+    source_message_id  text,
+    gmail_thread_id    text,
+    subject            text,
+    from_email         text,
+    message_type       text default 'unclassified',
+    reason             text,
+    raw_payload        jsonb default '{}'::jsonb,
+    created_at         timestamptz default now()
+);
+
+-- case_judgments: LLM judgment snapshots per case (sidecar output, never a
+-- routing decision).
+create table if not exists case_judgments (
+    record_id        uuid primary key default gen_random_uuid(),
+    case_id          text not null,
+    source_message_id text,
+    judgment_json    jsonb not null default '{}'::jsonb,
+    confidence       numeric,
+    next_best_action text,
+    interrupt_level  text default 'none',
+    created_at       timestamptz default now(),
+    idempotency_key  text
+);
+create index if not exists case_judgments_case_id_created_at_idx
+    on case_judgments (case_id, created_at desc);
+create unique index if not exists case_judgments_idempotency_key_idx
+    on case_judgments (idempotency_key) where idempotency_key is not null;
+
+-- validation_results: guardrail / tool-gate decisions (allowed or blocked).
+create table if not exists validation_results (
+    result_id           uuid primary key default gen_random_uuid(),
+    case_id             text not null,
+    source_message_id   text,
+    judgment_record_id  text,
+    tool_name           text,
+    allowed             boolean not null,
+    block_reason        text,
+    guardrails_triggered jsonb default '[]'::jsonb,
+    approval_required   boolean default true,
+    interrupt_level     text default 'none',
+    created_at          timestamptz default now()
+);
+
+-- execution_results: outcome of each executed business action.
+create table if not exists execution_results (
+    result_id          uuid primary key default gen_random_uuid(),
+    case_id            text not null,
+    action_request_id  text,
+    tool_name          text not null,
+    ok                 boolean not null,
+    result_json        jsonb,
+    error_type         text,
+    error_message      text,
+    created_resource_id text,
+    created_at         timestamptz default now()
+);
+
+-- workflow_records: one terminal record per completed workflow (both bots).
+create table if not exists workflow_records (
+    record_id             text primary key default gen_random_uuid()::text,
+    case_id               text not null,
+    bot_type              text not null,
+    business_object_type  text not null,
+    business_object_id    text not null default '',
+    status                text not null,
+    summary               text not null default '',
+    external_system       text,
+    external_id           text,
+    error_message         text,
+    needs_review          boolean not null default false,
+    completed_at          timestamptz,
+    created_at            timestamptz not null default now()
+);
+create index if not exists workflow_records_case_id_idx on workflow_records (case_id);
+create index if not exists workflow_records_bot_type_idx on workflow_records (bot_type);
+create index if not exists workflow_records_created_at_idx on workflow_records (created_at desc);
+
+
+-- ============================================================
 -- ROW LEVEL SECURITY
 -- ============================================================
 -- Every table in this schema is reached only through the backend using the
@@ -473,10 +577,14 @@ alter table reservation_events          enable row level security;
 alter table reservation_action_requests enable row level security;
 alter table system_heartbeat             enable row level security;
 alter table chat_pending_actions         enable row level security;
+alter table raw_email_events             enable row level security;
+alter table unresolved_reservation_events enable row level security;
+alter table case_judgments               enable row level security;
+alter table validation_results           enable row level security;
+alter table execution_results            enable row level security;
+alter table workflow_records             enable row level security;
 
--- Tables created outside this file (control/eval layer + LangGraph checkpointer
--- orphans) also have RLS enabled directly on the project; see migration
--- enable_rls_on_public_tables:
---   unresolved_reservation_events, case_judgments, raw_email_events,
---   validation_results, execution_results, workflow_records,
---   checkpoint_migrations, checkpoints, checkpoint_blobs, checkpoint_writes
+-- LangGraph checkpointer tables (checkpoint_migrations, checkpoints,
+-- checkpoint_blobs, checkpoint_writes) are created by the checkpointer
+-- library itself and had RLS enabled directly on the project; see migration
+-- enable_rls_on_public_tables.

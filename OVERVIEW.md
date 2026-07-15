@@ -71,8 +71,7 @@ Both share one core design philosophy: **a deterministic brain owns every real-w
 | Module | Role |
 |---|---|
 | `invoice_graph.py` | **Main invoice workflow.** Deterministic ~18-node state machine: classify intent → extract fields → resolve customer → confirm tier/payment → price → preview → approval gate → create Square draft → confirm send → offer receipt. Multiple human **interrupts**; Claude Haiku used only as extraction/edit-parsing sidecar. Checkpointed to PostgreSQL (Supabase). Max 2 edit rounds. |
-| `supervisor_graph.py` | Stateless intent router. Keyword fast-path for short messages, Claude Haiku for longer ones; routes to invoice vs tasting room agent. Each agent keeps a separate Mem0 namespace. |
-| `router.py` | Legacy router, superseded by `supervisor_graph.py`; kept for backward compatibility. |
+| `supervisor_graph.py` | Intent router (keyword fast-path + Claude Haiku). **Disabled in production** — `services/gateway.py` routes everything straight to the invoice agent and only uses the `RoutingDecision` dataclass; the `SupervisorAgent` class is exercised solely by the manual `db/eval_runner.py`. |
 
 ### `services/` — Business logic & infrastructure (~28 modules)
 
@@ -82,7 +81,6 @@ Both share one core design philosophy: **a deterministic brain owns every real-w
 | `square_service.py` | Square SDK wrapper: customer lookup/create, order create, invoice draft create + publish; idempotency keys derived from case_id. |
 | `customer_service.py` | Customer resolution by name/email/phone/company with fuzzy matching. Supabase primary, `customers.json` fallback. |
 | `product_service.py` | Product catalog + **deterministic** tier-multiplier pricing; wine-name alias resolution; shipping waived at $1,500+. |
-| `history_service.py` | Customer invoice/order history lookup; lists outstanding unpaid invoices for agent context. |
 | `pdf_service.py` | PDF → text via Claude's document API (handles digital + scanned/OCR); one-shot invoice field extraction. |
 | `approval_service.py` | Formats drafts into human-readable approval messages; logs decisions to `approval_log.json`. |
 | `invoice_hooks.py` | Lifecycle event bus (pre/post LLM, pre/post tool, interrupt, human decision) wired to trace events. |
@@ -106,8 +104,7 @@ Both share one core design philosophy: **a deterministic brain owns every real-w
 **AI, memory & learning**
 | Module | Role |
 |---|---|
-| `mem0_service.py` | Mem0 persistent memory; per-user facts; best-effort (never crashes the agent). |
-| `skill_service.py` | Persistent skill memory + reference resolver ("same as last time" → Supabase history, Mem0 fallback). |
+| `skill_service.py` | Persistent skill memory + reference resolver ("same as last time" → Supabase history, Mem0 fallback). Talks to Mem0 directly via the `mem0` client. |
 
 **Control, safety & observability**
 | Module | Role |
@@ -129,8 +126,8 @@ Both share one core design philosophy: **a deterministic brain owns every real-w
 ### `db/` — Persistence & evaluation
 | File | Role |
 |---|---|
-| `schema.sql` | All ~20 tables (see below). |
-| `models.py` | Dataclasses mirroring tables: `InvoiceLog`, `Case`, `TraceEvent`, `FailureLabel`, `GuardrailDecision`, `Reservation`, `AvailabilityClaim`, `ReservationEvent`, `ReservationActionRequest`, `CaseJudgmentRecord`, `WorkflowRecord`, `EvalCase`, etc. |
+| `schema.sql` | All tables (see below). Applied to Supabase **manually** — deploy never runs migrations. |
+| `models.py` | Dataclasses mirroring tables: `InvoiceLog`, `Case`, `TraceEvent`, `FailureLabel`, `GuardrailDecision`, `Reservation`, `AvailabilityClaim`, `ReservationEvent`, `ReservationActionRequest`, `WorkflowRecord`, `EvalCase`, etc. |
 | `repository.py` | Supabase data-access layer for every table; best-effort writes. |
 | `eval_runner.py` | Deterministic regression eval harness (intent/agent/output/terminal-status grading; no LLM judge). |
 | `eval_cases/*.json` | Golden + edge + regression + adversarial eval scenarios. |
@@ -146,9 +143,9 @@ Both share one core design philosophy: **a deterministic brain owns every real-w
 | `scripts/google_auth.py` | Generate Gmail OAuth token. |
 | `scripts/gmail_auth_check.py` | Validate Gmail auth/mailbox without sending. |
 | `scripts/tastingroom_mail_watcher.py` | Always-on Gmail reservation watcher. |
-| `scripts/replay_case.py`, `replay_mira_case.py` | Replay historical cases through the graph (shadow/dry-run). |
-| `scripts/build_tastingroom_memory.py` | Build case memory from historical Gmail forms. |
-| `scripts/eval_tasting_room.py`, `tastingroom_e2e_smoke.py`, `tastingroom_workflow_audit.py` | Tasting room evals, smoke tests, audits. |
+| `scripts/tastingroom_workflow_audit.py` | Manual tasting-room workflow audit. |
+| `scripts/reap_stale_cases.py` | Manual stale-case reaper (not scheduled anywhere). |
+| `scripts/backfill_tastingroom_gmail_labels.py`, `update_pricing_from_sheet.py`, `verify_tastingroom_square_invoices.py` | Manual one-off maintenance scripts. |
 
 ### Tech stack
 LangGraph · Claude API (Haiku for extraction/composition, Sonnet for judgment/patching) · FastAPI · Supabase/PostgreSQL · Square SDK · Gmail API · Mem0 · Fly.io + supervisord · Docker.
@@ -199,5 +196,5 @@ LangGraph · Claude API (Haiku for extraction/composition, Sonnet for judgment/p
 - **System integrations** — Square (invoicing), Gmail (intake + sending), Supabase/PostgreSQL (system of record), Mem0 (memory), Google Chat (staff interface), Claude (AI).
 - **Data sync** — scheduled Square → Supabase sync (customers, orders, invoices) with cursor-based incremental updates.
 - **Stable Gmail auth** — Google Workspace domain-wide delegation for server-side mailbox access (no fragile per-user refresh tokens).
-- **Deployment** — Fly.io with four supervised processes (web, invoice bot, tasting room bot, mail watcher); Docker-packaged; secrets via Fly.
+- **Deployment** — Fly.io with two processes (`web` and `tastingroom_watcher`, per `fly.toml`); Docker-packaged; secrets via Fly.
 - **Replay & shadow tooling** — historical cases can be replayed through the agent in dry-run/shadow mode for testing without side effects.
