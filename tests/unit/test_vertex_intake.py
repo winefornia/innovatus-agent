@@ -88,6 +88,7 @@ def _wire_intake(mocker, *, existing_case, posted):
     mocker.patch(trs + "extract_email_facts",
                  return_value={"client_name": "Mira Park", "client_email": "mirasopa@gmail.com"})
     mocker.patch(trs + "llm_extract_email", return_value={})
+    mocker.patch(trs + "build_thread_context", return_value="")
     mocker.patch(trs + "merge_llm_facts", side_effect=lambda f, llm, mt: f)
     mocker.patch(trs + "find_or_create_reservation",
                  return_value=(res.reservation_id, existing_case))
