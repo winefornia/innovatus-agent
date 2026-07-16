@@ -123,6 +123,7 @@ services/               All integrations & cross-cutting logic
   tastingroom_mailbox.py    ✉ intake: Squarespace mail → case (rejects Square mail)
   tastingroom_service.py    ✉ reservation coordination + approval decisions
   tastingroom_chat_service.py  staff NL commands for reservations
+  tastingroom_status.py     deterministic "status" fast-path for staff chat (no LLM)
   invoice_mail_validator.py 💰 closes invoice cases from Square's own emails
   customer_service.py / product_service.py / history_service.py   lookups & pricing
   skill_service.py / mem0_service.py     "same as usual" memory

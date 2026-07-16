@@ -124,14 +124,16 @@ def test_retried_message_event_processed_once(monkeypatch):
     monkeypatch.setattr(chat_agent, "discuss",
                         lambda text, *, user="": calls.append(text) or "ok")
 
+    # NOTE: not the word "status" — that now short-circuits deterministically
+    # before discuss() (see services.tastingroom_status).
     ev = {
         "chat": {"user": {"email": "cecil.park@winefornia.com"},
                  "messagePayload": {"space": {"name": "spaces/S"},
-                                    "message": {"name": "spaces/S/messages/dup", "text": "status"}}},
+                                    "message": {"name": "spaces/S/messages/dup", "text": "hello there"}}},
     }
     asyncio.run(tr.handle_tastingroom_event(ev))
     asyncio.run(tr.handle_tastingroom_event(ev))  # retry
-    assert calls == ["status"]  # processed exactly once
+    assert calls == ["hello there"]  # processed exactly once
 
 
 # ── #1 ack-then-post deadline race ────────────────────────────────────────────

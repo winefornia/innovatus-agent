@@ -200,6 +200,9 @@ def open_cases_status() -> list[dict]:
             "case_type": gs.case_type,
             "date": r.get("requested_date"),
             "confirmed": confirmed,
+            # Raw first-gap key — the deterministic status renderer maps it to a
+            # traffic-light level (services.tastingroom_status).
+            "stage": gaps[0] if gaps else "awaiting_reply",
             "waiting_on": (_GAP_STAGE.get(gaps[0], gaps[0]) if gaps
                           else "A reply we already requested"),
         })

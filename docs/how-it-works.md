@@ -134,7 +134,45 @@ decide; it acts. The typical sequence:
 Every inbound email (client reply, Josh reply) is matched to its case by the
 email thread, so the whole story lives on one case from form to confirmation.
 
-### 3. What keeps it honest
+### 3. Asking for status — instant, always the same shape
+
+Type **"status"** (or "what's open", "pending") in the tasting-room chat and
+you get the board back immediately — no thinking pause, same layout every time:
+
+> **Open tasting cases (3)**
+> 🔴 **Ana Silva** — Wed Jul 30 · Going back to the client for a new time
+> 🟡 **Mira Park** — Sat Jul 25 · Waiting on payment
+> 🟢 **Tom Reyes** — Sun Aug 2 · production tour · Ready to send the invoice
+>
+> *Say "status of \<name\>" for the full picture of one case.*
+
+The traffic light is the **case level**: 🔴 blocked (someone said no — the
+client needs to pick a new time), 🟡 waiting on someone outside (client reply,
+Josh, payment), 🟢 on track — the next move is ours. Blocked cases always sort
+to the top.
+
+Type **"status of Mira"** for one case and you get the full ladder — every
+party and step, each marked ✅ done · ⏳ in flight · 🔴 blocked · ◻️ not started —
+plus the single next action:
+
+> **Mira Park — TASTING-20260725-4G-MIRA**
+> Saturday, July 25 at 2:00 pm · 4 guests · Standard tasting
+>
+> ✅ Winefornia (Cecil) — approved
+> ✅ Josh (facility) — confirmed the slot
+> ✅ Customer — accepted the slot
+> ⏳ Invoice — sent, awaiting payment
+> ◻️ Final confirmation — not sent yet
+>
+> **Next:** Waiting on payment
+
+These replies come straight from the case data (the same goal model the
+coordinator uses to decide next steps) — no AI writes them, which is why they
+are instant and never vary in format. Anything more nuanced — *"why is Mira
+waiting?"*, *"show me the original email"* — still goes to the assistant,
+which answers conversationally with the full case context.
+
+### 4. What keeps it honest
 
 - **Safe mode** (`TASTINGROOM_SAFE_MODE`): when on, all outbound email goes to
   the test recipient instead of real clients.
