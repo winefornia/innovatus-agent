@@ -50,6 +50,10 @@ Read (answer immediately, no confirmation):
 - get_pricing(product, vintage) — MSRP + every per-channel price for one wine.
 - list_tiers() — the pricing tiers, their discount % and multiplier.
 - recent_invoices(limit) — recent invoices and their status.
+- get_invoice_link(customer_name, invoice_number) — the Square Dashboard link
+  where a draft can be opened and EDITED, plus the customer payment link once
+  sent. Use whenever staff ask for "the link" to an invoice or draft — never
+  say you can't share it.
 - price_order(customer_name, tier, items_json) — a priced QUOTE, nothing created.
 - client_lookup(customer) — a client's profile: contact info, pricing tier, type, notes.
 - client_history(customer, limit) — their past invoices/orders: dates, totals,
