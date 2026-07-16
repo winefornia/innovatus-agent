@@ -467,6 +467,24 @@ create table if not exists chat_pending_actions (
 );
 
 
+-- Every email fetched from the watched mailbox, verbatim, before any triage
+-- (the tasting-room intake's audit trail — "did the mail even arrive?").
+-- NOTE: this table was originally created directly on the Supabase project;
+-- the DDL below mirrors the live table exactly (timestamp column is
+-- ingested_at, NOT created_at — db/repository.py depends on that name).
+create table if not exists raw_email_events (
+    event_id          uuid primary key default gen_random_uuid(),
+    gmail_message_id  text not null unique,
+    gmail_thread_id   text,
+    subject           text,
+    from_email        text,
+    to_email          text,
+    body              text,
+    raw_payload       jsonb default '{}'::jsonb,
+    ingested_at       timestamptz default now()
+);
+
+
 -- ============================================================
 -- ROW LEVEL SECURITY
 -- ============================================================
@@ -493,10 +511,11 @@ alter table reservation_events          enable row level security;
 alter table reservation_action_requests enable row level security;
 alter table system_heartbeat             enable row level security;
 alter table chat_pending_actions         enable row level security;
+alter table raw_email_events             enable row level security;
 
 -- Tables created outside this file (control/eval layer + LangGraph checkpointer
 -- orphans) also have RLS enabled directly on the project; see migration
 -- enable_rls_on_public_tables:
---   unresolved_reservation_events, case_judgments, raw_email_events,
+--   unresolved_reservation_events, case_judgments,
 --   validation_results, execution_results, workflow_records,
 --   checkpoint_migrations, checkpoints, checkpoint_blobs, checkpoint_writes

@@ -55,13 +55,13 @@ def _thread_rows():
     return [
         {"gmail_message_id": "m1", "from_email": "mira@example.com",
          "subject": "Tasting request", "body": "Can we come July 10?",
-         "created_at": "2026-07-01T10:00:00"},
+         "ingested_at": "2026-07-01T10:00:00"},
         {"gmail_message_id": "m2", "from_email": "audrey@innovatuswine.com",
          "subject": "Re: Tasting request", "body": "We have 2pm or 4pm open.",
-         "created_at": "2026-07-02T10:00:00"},
+         "ingested_at": "2026-07-02T10:00:00"},
         {"gmail_message_id": "m3", "from_email": "mira@example.com",
          "subject": "Re: Tasting request", "body": "Yes, 2pm works!",
-         "created_at": "2026-07-03T10:00:00"},
+         "ingested_at": "2026-07-03T10:00:00"},
     ]
 
 
@@ -123,15 +123,21 @@ def test_intake_passes_thread_context_for_the_cases_thread(mocker):
     assert llm.call_args.kwargs["thread_context"] == "EARLIER THREAD"
 
 
-def test_repo_thread_query_sorts_and_limits(mocker):
+def test_repo_thread_query_orders_by_ingested_at_and_limits(mocker):
     import db.repository as repo
 
-    rows = list(reversed(_thread_rows()))         # arrive newest-first from the DB
+    # The DB returns newest-first, already limited server-side (limit=2 → m3, m2).
+    rows = list(reversed(_thread_rows()))[:2]
     fake = MagicMock()
-    fake.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = rows
+    chain = fake.table.return_value.select.return_value.eq.return_value
+    chain.order.return_value.limit.return_value.execute.return_value.data = rows
     mocker.patch.object(repo, "_get_client", return_value=fake)
 
     out = repo.list_raw_email_events_by_thread("t1", limit=2)
 
     assert [r["gmail_message_id"] for r in out] == ["m2", "m3"]   # newest 2, oldest first
+    # The live table's timestamp column is ingested_at, NOT created_at (July 2026
+    # drift audit) — ordering must happen server-side on that exact name.
+    chain.order.assert_called_once_with("ingested_at", desc=True)
+    chain.order.return_value.limit.assert_called_once_with(2)
     assert repo.list_raw_email_events_by_thread("") == []
