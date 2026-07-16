@@ -379,6 +379,44 @@ def recent_invoices(limit: int = 10) -> list[dict]:
     return out
 
 
+def _resolve_invoice_ref(ref: str) -> tuple[str, str]:
+    """Turn what staff call an invoice into the Square invoice id the API needs.
+
+    Staff — and this assistant's own replies — use the display number
+    ("Invoice #202471"), but Square's API only accepts the opaque invoice id
+    ("inv:0-…") and 404s on the number. Seen in production 2026-07-15: the bot
+    printed "#202471", staff pasted it straight back, and the bot told them the
+    invoice might not exist. Numeric refs are resolved through the durable
+    copies (invoice_logs first — agent-created drafts — then the synced
+    square_invoices for dashboard-created ones); anything non-numeric is
+    already an id and passes through.
+
+    Returns (invoice_id, "") on success, ("", why_not) when a numeric ref
+    matches nothing, and ("", "") for a blank ref.
+    """
+    ref = (ref or "").lstrip("#").strip()
+    if not ref:
+        return "", ""
+    if not ref.isdigit():
+        return ref, ""
+    from db.repository import find_invoice_log_by_number, find_square_invoice_by_number
+
+    try:
+        row = find_invoice_log_by_number(ref)
+        if row and row.get("square_invoice_id"):
+            return row["square_invoice_id"], ""
+    except Exception as exc:  # pragma: no cover - defensive
+        log.info("[inv:chat-actions] invoice-number lookup failed: %s", exc)
+    try:
+        row = find_square_invoice_by_number(ref)
+        if row and row.get("square_invoice_id"):
+            return row["square_invoice_id"], ""
+    except Exception as exc:  # pragma: no cover - defensive
+        log.info("[inv:chat-actions] synced-invoice lookup failed: %s", exc)
+    return "", (f"I couldn't match invoice #{ref} to a Square invoice in our records. "
+                "Check recent_invoices for the latest drafts, or give me the customer name.")
+
+
 def get_invoice_link(customer_name: str = "", invoice_number: str = "") -> str:
     """Get the links for an invoice: the Square Dashboard page where a DRAFT
     can be opened and EDITED, plus the customer payment link once it is sent.
@@ -389,24 +427,32 @@ def get_invoice_link(customer_name: str = "", invoice_number: str = "") -> str:
 
     Args:
         customer_name: whose invoice (name as staff say it; fuzzy ok).
-        invoice_number: exact Square invoice id if staff gave one (optional).
+        invoice_number: the invoice number as shown in chat and in Square
+            (e.g. "202471" or "#202471"), or a full Square invoice id. Optional.
     """
     from db.repository import get_recent_invoice_for_customer
     from services import square_service
     from services.square_service import invoice_dashboard_url
 
-    invoice_id = (invoice_number or "").strip()
-    label_hint = ""
+    name = (customer_name or "").strip()
+    ref = (invoice_number or "").lstrip("#").strip()
+    invoice_id, why_not = _resolve_invoice_ref(ref)
+    label_hint = ref if ref.isdigit() else ""
+    note = ""
+    if ref and not invoice_id and name:
+        # Read-only, so falling back to the customer's latest invoice beats a
+        # dead end — but say so, in case it isn't the one they meant.
+        note = f"(#{ref} didn't match our records directly — this is {name}'s most recent invoice.)"
     if not invoice_id:
-        if not (customer_name or "").strip():
-            return ("Whose invoice link do you need? Give me the customer name "
-                    "(or an invoice number).")
+        if not name:
+            return why_not or ("Whose invoice link do you need? Give me the customer name "
+                               "(or an invoice number).")
         try:
-            row = get_recent_invoice_for_customer(customer_name=customer_name.strip())
+            row = get_recent_invoice_for_customer(customer_name=name)
         except Exception as exc:  # pragma: no cover - defensive
             return f"Couldn't look up recent invoices — {exc}"
         if not row or not row.get("square_invoice_id"):
-            return (f"I couldn't find an invoice for {customer_name}. "
+            return (f"I couldn't find an invoice for {name}. "
                     "Check recent_invoices, or give me the invoice number.")
         invoice_id = row["square_invoice_id"]
         label_hint = str(row.get("square_invoice_number") or "")
@@ -421,15 +467,18 @@ def get_invoice_link(customer_name: str = "", invoice_number: str = "") -> str:
 
     label = inv.get("invoice_number") or label_hint or invoice_id
     status = (inv.get("status") or "").upper()
-    who = f" for {customer_name.strip()}" if (customer_name or "").strip() else ""
+    who = f" for {name}" if name else ""
     if status == "DRAFT":
-        return (f"Invoice {label}{who} is a DRAFT — view or edit it here:\n"
-                f"{dashboard}\n"
-                "(No customer payment link yet — Square creates that when it's sent.)")
+        out = (f"Invoice {label}{who} is a DRAFT — view or edit it here:\n"
+               f"{dashboard}\n"
+               "(No customer payment link yet — Square creates that when it's sent.)")
+        return f"{out}\n{note}" if note else out
     lines = [f"Invoice {label}{who} — status {status or 'unknown'}."]
     if inv.get("public_url"):
         lines.append(f"Payment link (for the customer): {inv['public_url']}")
     lines.append(f"Square Dashboard (view/edit): {dashboard}")
+    if note:
+        lines.append(note)
     return "\n".join(lines)
 
 
@@ -988,21 +1037,28 @@ def stage_send_invoice(customer_name: str = "", invoice_number: str = "") -> str
 
     Args:
         customer_name: whose draft to send (name as staff say it; fuzzy ok).
-        invoice_number: exact Square invoice id if staff gave one (optional).
+        invoice_number: the invoice number as shown in chat and in Square
+            (e.g. "202471" or "#202471"), or a full Square invoice id. Optional.
     """
     from db.repository import get_recent_invoice_for_customer
     from services import square_service
 
-    invoice_id = (invoice_number or "").strip()
+    name = (customer_name or "").strip()
+    ref = (invoice_number or "").lstrip("#").strip()
+    invoice_id, why_not = _resolve_invoice_ref(ref)
+    if ref and not invoice_id:
+        # Money path: staff named a specific invoice — never quietly substitute
+        # a different one (e.g. the customer's most recent draft).
+        return why_not
     if not invoice_id:
-        if not (customer_name or "").strip():
+        if not name:
             return "Whose invoice should I send? Give me the customer name (or an invoice number)."
         try:
-            row = get_recent_invoice_for_customer(customer_name=customer_name.strip())
+            row = get_recent_invoice_for_customer(customer_name=name)
         except Exception as exc:  # pragma: no cover - defensive
             return f"Couldn't look up recent invoices — {exc}"
         if not row or not row.get("square_invoice_id"):
-            return (f"I couldn't find a drafted invoice for {customer_name}. "
+            return (f"I couldn't find a drafted invoice for {name}. "
                     "Check recent_invoices, or give me the invoice number.")
         invoice_id = row["square_invoice_id"]
 
