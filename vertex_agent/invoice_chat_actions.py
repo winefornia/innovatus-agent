@@ -357,6 +357,7 @@ def recent_invoices(limit: int = 10) -> list[dict]:
         limit: how many to return (default 10).
     """
     from db.repository import list_recent_invoices
+    from services.square_service import invoice_dashboard_url
 
     try:
         rows = list_recent_invoices(limit=max(1, min(limit, 25)))
@@ -364,16 +365,72 @@ def recent_invoices(limit: int = 10) -> list[dict]:
         return [{"error": str(exc)}]
     out = []
     for r in rows:
+        sq_id = r.get("square_invoice_id")
         out.append({
             "customer": r.get("customer_name"),
             "verification": r.get("verification_status"),
             "tier": r.get("tier_name"),
             "total": _money(r.get("total_before_tax_cents")),
             "status": r.get("approval"),
-            "square_invoice_id": r.get("square_invoice_id"),
+            "square_invoice_id": sq_id,
+            "dashboard_url": invoice_dashboard_url(sq_id) if sq_id else None,
             "created_at": r.get("created_at"),
         })
     return out
+
+
+def get_invoice_link(customer_name: str = "", invoice_number: str = "") -> str:
+    """Get the links for an invoice: the Square Dashboard page where a DRAFT
+    can be opened and EDITED, plus the customer payment link once it is sent.
+    Read-only — answer immediately, nothing is created or sent.
+
+    Use whenever staff ask for "the link" — "show me the link of the draft",
+    "share the invoice link here", "where do I edit it".
+
+    Args:
+        customer_name: whose invoice (name as staff say it; fuzzy ok).
+        invoice_number: exact Square invoice id if staff gave one (optional).
+    """
+    from db.repository import get_recent_invoice_for_customer
+    from services import square_service
+    from services.square_service import invoice_dashboard_url
+
+    invoice_id = (invoice_number or "").strip()
+    label_hint = ""
+    if not invoice_id:
+        if not (customer_name or "").strip():
+            return ("Whose invoice link do you need? Give me the customer name "
+                    "(or an invoice number).")
+        try:
+            row = get_recent_invoice_for_customer(customer_name=customer_name.strip())
+        except Exception as exc:  # pragma: no cover - defensive
+            return f"Couldn't look up recent invoices — {exc}"
+        if not row or not row.get("square_invoice_id"):
+            return (f"I couldn't find an invoice for {customer_name}. "
+                    "Check recent_invoices, or give me the invoice number.")
+        invoice_id = row["square_invoice_id"]
+        label_hint = str(row.get("square_invoice_number") or "")
+
+    dashboard = invoice_dashboard_url(invoice_id)
+    inv = square_service.get_invoice(invoice_id)
+    if inv.get("error"):
+        # Square is unreachable or slow — the dashboard link is still the right
+        # place to look, so hand it over with a caveat instead of refusing.
+        return (f"Open it in the Square Dashboard: {dashboard}\n"
+                f"(I couldn't verify its current status — {inv['error']})")
+
+    label = inv.get("invoice_number") or label_hint or invoice_id
+    status = (inv.get("status") or "").upper()
+    who = f" for {customer_name.strip()}" if (customer_name or "").strip() else ""
+    if status == "DRAFT":
+        return (f"Invoice {label}{who} is a DRAFT — view or edit it here:\n"
+                f"{dashboard}\n"
+                "(No customer payment link yet — Square creates that when it's sent.)")
+    lines = [f"Invoice {label}{who} — status {status or 'unknown'}."]
+    if inv.get("public_url"):
+        lines.append(f"Payment link (for the customer): {inv['public_url']}")
+    lines.append(f"Square Dashboard (view/edit): {dashboard}")
+    return "\n".join(lines)
 
 
 def price_order(customer_name: str, tier: str, items_json: str, customer_email: str = "") -> dict:
@@ -1388,6 +1445,7 @@ READ_TOOLS = [
     get_pricing,
     list_tiers,
     recent_invoices,
+    get_invoice_link,
     price_order,
     client_lookup,
     client_history,

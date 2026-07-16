@@ -320,3 +320,56 @@ class TestStageSendInvoice:
         ica.stage_send_invoice(invoice_number="inv_9")
         out = ica.confirm_pending_action()
         assert "nothing sent" in out.lower()
+
+
+class TestGetInvoiceLink:
+    """"show me the link of the draft" must return the Square Dashboard URL —
+    drafts have no public payment link, and the agent used to refuse
+    (production gap seen 2026-07-15). Read-only: never stages anything."""
+
+    DASH = "https://app.squareup.com/dashboard/invoices/inv_9"
+
+    def _inv(self, status="DRAFT", public_url=None):
+        return {"invoice_id": "inv_9", "invoice_number": "WF-0009",
+                "status": status, "public_url": public_url,
+                "total_money_cents": 79500}
+
+    def test_draft_returns_dashboard_edit_link(self, mocker):
+        mocker.patch("db.repository.get_recent_invoice_for_customer",
+                     return_value={"square_invoice_id": "inv_9"})
+        mocker.patch("services.square_service.get_invoice", return_value=self._inv())
+        out = ica.get_invoice_link(customer_name="Chang Lim")
+        assert self.DASH in out and "DRAFT" in out and "WF-0009" in out
+        assert not ica._PENDING  # read-only
+
+    def test_sent_invoice_returns_payment_and_dashboard_links(self, mocker):
+        mocker.patch("services.square_service.get_invoice",
+                     return_value=self._inv(status="UNPAID",
+                                            public_url="https://sq/pay/inv_9"))
+        out = ica.get_invoice_link(invoice_number="inv_9")
+        assert "https://sq/pay/inv_9" in out and self.DASH in out
+
+    def test_square_error_still_gives_dashboard_link(self, mocker):
+        mocker.patch("db.repository.get_recent_invoice_for_customer",
+                     return_value={"square_invoice_id": "inv_9"})
+        mocker.patch("services.square_service.get_invoice",
+                     return_value={"error": "Square timeout"})
+        out = ica.get_invoice_link(customer_name="Chang Lim")
+        assert self.DASH in out and "couldn't verify" in out.lower()
+
+    def test_no_name_or_number_asks(self):
+        out = ica.get_invoice_link()
+        assert "customer name" in out.lower()
+
+    def test_unknown_customer_says_not_found(self, mocker):
+        mocker.patch("db.repository.get_recent_invoice_for_customer",
+                     return_value=None)
+        out = ica.get_invoice_link(customer_name="Nobody")
+        assert "couldn't find" in out.lower()
+
+    def test_recent_invoices_include_dashboard_url(self, mocker):
+        mocker.patch("db.repository.list_recent_invoices",
+                     return_value=[{"customer_name": "Chang Lim",
+                                    "square_invoice_id": "inv_9"}])
+        rows = ica.recent_invoices()
+        assert rows[0]["dashboard_url"] == self.DASH
