@@ -13,11 +13,14 @@ from __future__ import annotations
 import dataclasses
 import logging
 import os
+import re
 
 from db.models import Reservation
 from db.repository import (
     get_reservation,
     list_availability_claims,
+    list_raw_email_events_by_thread,
+    list_raw_email_events_for_case,
     list_recent_reservations,
     list_reservation_events,
 )
@@ -60,6 +63,73 @@ def get_case(reservation_id: str) -> dict:
         "gaps": gs.gaps(),
         "goal_met": gs.is_goal_met(),
     }
+
+
+def _gmail_message_link(gmail_message_id: str) -> str:
+    """Deep link that opens one message in the watched winery mailbox.
+
+    Gmail's web UI accepts the API's hex message id in the #all/ fragment. The
+    authuser hint routes multi-account users to the right mailbox; without it
+    Gmail falls back to the default signed-in account.
+    """
+    mailbox = os.getenv("GOOGLE_DELEGATED_USER_EMAIL", "")
+    if mailbox:
+        return f"https://mail.google.com/mail/?authuser={mailbox}#all/{gmail_message_id}"
+    return f"https://mail.google.com/mail/#all/{gmail_message_id}"
+
+
+def get_request_email(reservation_id: str) -> dict:
+    """Return the stored source email(s) behind a case, each with a Gmail link.
+
+    Use when staff ask for the link to the request, want to see the original
+    mail, or want proof of what the client actually wrote. Each email carries
+    its subject, sender, received time, a short excerpt, and a gmail_link that
+    opens the message in the winery mailbox (the viewer must have access to
+    that mailbox). The oldest email is the original booking request.
+
+    Args:
+        reservation_id: the reservation whose source mail to fetch.
+    """
+    reservation = get_reservation(reservation_id)
+    if not reservation:
+        return {"error": f"No reservation {reservation_id}"}
+
+    # Emails linked through the case's audit events, then anything else stored
+    # for the reservation's Gmail threads (replies land there before an event
+    # references them).
+    rows = list(list_raw_email_events_for_case(reservation_id))
+    seen = {r.get("gmail_message_id") for r in rows}
+    for thread_id in reservation.get("gmail_thread_ids") or []:
+        if not re.fullmatch(r"[0-9a-f]{12,32}", str(thread_id or "")):
+            continue  # synthetic/manual ids never resolve in Gmail
+        for r in list_raw_email_events_by_thread(thread_id):
+            if r.get("gmail_message_id") not in seen:
+                seen.add(r.get("gmail_message_id"))
+                rows.append(r)
+    rows.sort(key=lambda r: r.get("ingested_at") or "")
+
+    emails = []
+    for i, r in enumerate(rows):
+        excerpt = " ".join((r.get("body") or "").split())
+        emails.append({
+            "role": "original request" if i == 0 else "follow-up",
+            "subject": r.get("subject") or "(no subject)",
+            "from": r.get("from_email") or "",
+            "received": r.get("ingested_at") or "",
+            "excerpt": excerpt[:300],
+            "gmail_link": _gmail_message_link(r["gmail_message_id"]),
+        })
+
+    result = {
+        "reservation_id": reservation_id,
+        "client_name": reservation.get("client_name"),
+        "mailbox": os.getenv("GOOGLE_DELEGATED_USER_EMAIL", "") or "the winery mailbox",
+        "emails": emails,
+    }
+    if not emails:
+        result["note"] = ("No stored source email for this case — it may have been "
+                          "opened manually or from chat rather than from a mail.")
+    return result
 
 
 def list_open_cases() -> list[dict]:
