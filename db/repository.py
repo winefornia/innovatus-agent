@@ -740,7 +740,9 @@ def list_raw_email_events_for_case(case_id: str) -> list[dict]:
     """
     client = _get_client()
     events = list_reservation_events(case_id, limit=100)
-    source_ids = [e["source_message_id"] for e in events if e.get("source_message_id")]
+    source_ids = list(dict.fromkeys(
+        e["source_message_id"] for e in events if e.get("source_message_id")
+    ))
     if not source_ids:
         return []
     raw = []
@@ -749,6 +751,29 @@ def list_raw_email_events_for_case(case_id: str) -> list[dict]:
         if row:
             raw.append(row)
     return raw
+
+
+def list_raw_email_events_by_thread(gmail_thread_id: str, limit: int = 10) -> list[dict]:
+    """Return raw emails previously stored for a Gmail thread, oldest first.
+
+    Powers thread-aware LLM extraction: a reply like "yes, that works" only
+    makes sense next to the earlier messages of the same thread.
+    """
+    if not gmail_thread_id:
+        return []
+    client = _get_client()
+    result = (
+        client.table("raw_email_events")
+        .select("*")
+        .eq("gmail_thread_id", gmail_thread_id)
+        .limit(max(limit * 3, 30))
+        .execute()
+    )
+    rows = result.data or []
+    # Sort client-side: raw_email_events was created outside schema.sql, so
+    # don't depend on a server-side order over its timestamp column.
+    rows.sort(key=lambda r: str(r.get("created_at") or ""))
+    return rows[-limit:]
 
 
 def insert_validation_result(record: ValidationResultRecord) -> None:

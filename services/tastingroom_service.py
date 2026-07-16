@@ -423,22 +423,74 @@ def extract_email_facts(subject: str, sender: str, body: str, message_type: str)
     return facts
 
 
-def llm_extract_email(subject: str, sender: str, body: str, message_type: str) -> dict[str, Any]:
-    """Best-effort LLM extraction; deterministic regex remains the fallback."""
+def build_thread_context(gmail_thread_id: str, *, exclude_message_id: str = "",
+                         max_messages: int = 6, per_message_chars: int = 2000) -> str:
+    """Earlier emails of the same Gmail thread (from raw_email_events), oldest
+    first, formatted as LLM context. Best-effort: returns "" for a brand-new
+    thread or when the DB is unavailable — extraction then proceeds without it."""
+    if not gmail_thread_id:
+        return ""
+    try:
+        from db.repository import list_raw_email_events_by_thread
+
+        rows = list_raw_email_events_by_thread(gmail_thread_id, limit=max_messages + 1)
+    except Exception as exc:
+        logging.debug("[tastingroom] thread context unavailable for %s: %s", gmail_thread_id, exc)
+        return ""
+    blocks: list[str] = []
+    for row in rows:
+        if exclude_message_id and row.get("gmail_message_id") == exclude_message_id:
+            continue
+        body = _latest_text(row.get("body") or "")[:per_message_chars]
+        blocks.append(
+            f"From: {row.get('from_email') or 'unknown'}\n"
+            f"Subject: {row.get('subject') or '(no subject)'}\n"
+            f"{body}".strip()
+        )
+    return "\n\n---\n\n".join(blocks[-max_messages:])
+
+
+# Guard against a pathological mail blowing the request — in practice the whole
+# decoded body always fits. The old 6000-char cut silently dropped form fields
+# and the client's identity from long HTML-decoded bodies.
+_LLM_EXTRACT_MAX_CHARS = 150_000
+
+
+def llm_extract_email(subject: str, sender: str, body: str, message_type: str,
+                      thread_context: str = "") -> dict[str, Any]:
+    """Best-effort LLM extraction; deterministic regex remains the fallback.
+
+    The model sees the ENTIRE email plus the earlier messages of the same Gmail
+    thread, so a reply like "yes, 2pm works" resolves against what was actually
+    offered on that case, and the client's identity is picked up wherever it
+    appears in the mail."""
     try:
         from langchain_anthropic import ChatAnthropic
         from langchain_core.messages import HumanMessage, SystemMessage
 
+        context_block = (
+            f"Earlier messages in this thread (oldest first):\n{thread_context}\n\n===\n\n"
+            if thread_context else ""
+        )
         llm = ChatAnthropic(model="claude-haiku-4-5-20251001", temperature=0)
         result = llm.invoke([
             SystemMessage(content=(
                 "Extract winery tasting reservation facts from this email. "
+                "Scan the ENTIRE email — form fields, signatures, and quoted earlier messages — "
+                "for the client's identity (client_name, client_email, phone) and booking details. "
+                "If earlier thread messages are provided, use them ONLY to resolve references in the "
+                "newest email (e.g. which slot 'yes, that works' accepts); facts stated in the newest "
+                "email always win. "
                 "Return only JSON. Use null when unknown. Do not infer payment or booking confirmation. "
                 "Fields: client_name, client_email, phone, requested_date YYYY-MM-DD, requested_time HH:MM:SS, "
                 "guest_count integer, experience_type, price_per_person_cents integer, "
                 "candidate_slots array of {date,start_time,time_description}, summary."
             )),
-            HumanMessage(content=f"Type: {message_type}\nSubject: {subject}\nFrom: {sender}\n\n{body[:6000]}"),
+            HumanMessage(content=(
+                f"{context_block}Newest email to extract from:\n"
+                f"Type: {message_type}\nSubject: {subject}\nFrom: {sender}\n\n"
+                f"{body[:_LLM_EXTRACT_MAX_CHARS]}"
+            )),
         ])
         content = result.content.strip()
         if content.startswith("```"):
@@ -504,7 +556,24 @@ def build_case_timeline(reservation_id: str, limit: int = 40) -> str:
             f"{claim.get('date') or ''} {claim.get('start_time') or claim.get('time_description') or ''} "
             f"source={claim.get('source_message_id')}"
         )
-    return "\n".join(lines)[-6000:]
+    # The case's actual emails (not just event one-liners), so the planning and
+    # drafting LLM sees what the client and facility literally wrote. Best-effort.
+    try:
+        from db.repository import list_raw_email_events_for_case
+
+        emails = list_raw_email_events_for_case(reservation_id)
+    except Exception as exc:
+        logging.debug("[tastingroom] case emails unavailable for timeline: %s", exc)
+        emails = []
+    if emails:
+        lines.append("Emails on this case (oldest first):")
+        for row in emails[-8:]:
+            body = _latest_text(row.get("body") or "")[:800]
+            lines.append(
+                f"- from {row.get('from_email') or 'unknown'} | {row.get('subject') or '(no subject)'}\n"
+                f"  {body}"
+            )
+    return "\n".join(lines)[-12000:]
 
 
 def plan_next_action_from_timeline(

@@ -31,6 +31,7 @@ def intake_email(*, subject: str, sender: str, body: str, to_email: str = "",
     from services.tastingroom_service import (
         _email_only,
         build_claims,
+        build_thread_context,
         classify_email,
         extract_email_facts,
         find_or_create_reservation,
@@ -53,10 +54,17 @@ def intake_email(*, subject: str, sender: str, body: str, to_email: str = "",
         except Exception as exc:
             log.debug("[tr:intake] raw event insert best-effort failed: %s", exc)
 
-    # 2) classify + extract facts
+    # 2) classify + extract facts. The LLM extractor gets the case's earlier
+    # thread messages (this message excluded — its raw event was just stored
+    # above) so replies resolve against what was actually offered.
     message_type = classify_email(subject, sender, body)
     facts = extract_email_facts(subject, sender, body, message_type)
-    facts = merge_llm_facts(facts, llm_extract_email(subject, sender, body, message_type), message_type)
+    thread_context = build_thread_context(gmail_thread_id, exclude_message_id=gmail_message_id)
+    facts = merge_llm_facts(
+        facts,
+        llm_extract_email(subject, sender, body, message_type, thread_context=thread_context),
+        message_type,
+    )
     # sender_email lets the reservation matcher recognize Square notification
     # emails even when they classify as "unclassified" (wine-order noise must
     # never attach to tasting cases by name).

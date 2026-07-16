@@ -108,6 +108,7 @@ def _patch_intake(mocker, message_type, facts):
     mocker.patch.object(trs, "classify_email", return_value=message_type)
     mocker.patch.object(trs, "extract_email_facts", return_value=facts)
     mocker.patch.object(trs, "llm_extract_email", return_value={})
+    mocker.patch.object(trs, "build_thread_context", return_value="")
     mocker.patch.object(trs, "merge_llm_facts", side_effect=lambda f, l, m=None: f)
     mocker.patch.object(trs, "find_or_create_reservation", return_value=("TASTING-X", None))  # new
     mocker.patch("db.repository.insert_raw_email_event", return_value=None)
