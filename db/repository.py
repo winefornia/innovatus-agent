@@ -762,18 +762,19 @@ def list_raw_email_events_by_thread(gmail_thread_id: str, limit: int = 10) -> li
     if not gmail_thread_id:
         return []
     client = _get_client()
+    # The table's timestamp column is ingested_at (not created_at) — it lives
+    # outside schema.sql; see the raw_email_events reference DDL there.
     result = (
         client.table("raw_email_events")
         .select("*")
         .eq("gmail_thread_id", gmail_thread_id)
-        .limit(max(limit * 3, 30))
+        .order("ingested_at", desc=True)
+        .limit(limit)
         .execute()
     )
     rows = result.data or []
-    # Sort client-side: raw_email_events was created outside schema.sql, so
-    # don't depend on a server-side order over its timestamp column.
-    rows.sort(key=lambda r: str(r.get("created_at") or ""))
-    return rows[-limit:]
+    rows.reverse()  # newest-first from the DB → oldest-first for the LLM
+    return rows
 
 
 def insert_validation_result(record: ValidationResultRecord) -> None:
