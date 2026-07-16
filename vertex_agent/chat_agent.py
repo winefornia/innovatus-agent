@@ -22,7 +22,12 @@ from vertex_agent.chat_actions import (
     peek_pending,
     set_current_user,
 )
-from vertex_agent.tools import get_case, list_open_cases, open_cases_status
+from vertex_agent.tools import (
+    get_case,
+    get_request_email,
+    list_open_cases,
+    open_cases_status,
+)
 
 
 def find_cases(query: str) -> list[dict]:
@@ -61,6 +66,13 @@ Tools:
 - get_case(reservation_id) — full detail: the three parties (client, Winefornia,
   Josh), the goal_state, the open `gaps`, claims, and event history.
 - list_open_cases() — raw open-case list with goal_state.
+- get_request_email(reservation_id) — the stored source email(s) behind a case,
+  each with subject, sender, received time, a short excerpt, and a gmail_link.
+  Use when staff ask for "the link to the request", "show me the mail", or want
+  proof of what the client wrote. Show the link as a plain URL on its own line
+  (Google Chat auto-links it) and quote the subject, sender, and received time
+  next to it as evidence — never invent or guess a link; if the tool returns no
+  emails, say so plainly.
 
 Answer what's asked: current status, who we're waiting on, what's blocking, the
 next step, what's been done. Quote concrete facts (dates, names, states).
@@ -117,7 +129,8 @@ def _get_chat_agent():
             name="tasting_room_assistant",
             description="Conversational assistant for tasting-room cases: answers questions and drives cases (confirm-first for outside-world actions).",
             instruction=_CHAT_INSTRUCTION,
-            tools=[open_cases_status, find_cases, get_case, list_open_cases, *WRITE_TOOLS],
+            tools=[open_cases_status, find_cases, get_case, list_open_cases,
+                   get_request_email, *WRITE_TOOLS],
         )
     return _chat_agent
 
