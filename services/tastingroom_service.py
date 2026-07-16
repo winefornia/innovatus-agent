@@ -1413,7 +1413,7 @@ def approval_message(reservation: Reservation, action: str, draft: dict[str, str
         return (
             f"New tasting request\n\n"
             f"{header}\n\n"
-            f"The caves are available. Does this work for our schedule?\n"
+            f"Does this work for our schedule?\n"
             f"(Nothing gets sent — just recording whether we can do it.)"
         )
     if action == "review_payment_status":
