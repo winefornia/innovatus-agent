@@ -373,3 +373,73 @@ class TestGetInvoiceLink:
                                     "square_invoice_id": "inv_9"}])
         rows = ica.recent_invoices()
         assert rows[0]["dashboard_url"] == self.DASH
+
+
+class TestInvoiceNumberResolution:
+    """Staff paste back the number the bot itself displays ("Invoice #202471"),
+    but Square's API only accepts the opaque invoice id ("inv:0-…") and 404s on
+    the number. Production 2026-07-15: the bot printed #202471, staff pasted it
+    back, and the bot claimed the invoice might not exist. Numeric refs must
+    resolve through the durable copies (invoice_logs, then synced
+    square_invoices) so the number staff see in chat is a working handle."""
+
+    SQ_ID = "inv:0-ChCHabc123"
+    DASH = f"https://app.squareup.com/dashboard/invoices/{SQ_ID}"
+
+    def _inv(self, status="DRAFT"):
+        return {"invoice_id": self.SQ_ID, "invoice_number": "202471",
+                "status": status, "version": 2, "public_url": None,
+                "total_money_cents": 167548}
+
+    def test_display_number_resolves_via_invoice_log(self, mocker):
+        mocker.patch("db.repository.find_invoice_log_by_number",
+                     return_value={"square_invoice_id": self.SQ_ID})
+        mocker.patch("services.square_service.get_invoice", return_value=self._inv())
+        out = ica.get_invoice_link(customer_name="Chang Lim", invoice_number="#202471")
+        assert self.DASH in out and "202471" in out and "DRAFT" in out
+
+    def test_send_stages_from_display_number(self, mocker):
+        mocker.patch("db.repository.find_invoice_log_by_number",
+                     return_value={"square_invoice_id": self.SQ_ID})
+        mocker.patch("services.square_service.get_invoice", return_value=self._inv())
+        out = ica.stage_send_invoice(customer_name="Chang Lim", invoice_number="202471")
+        assert "SEND invoice" in out and "202471" in out and "$1,675.48" in out
+        assert ica._PENDING[ica._user()]["params"]["invoice_id"] == self.SQ_ID
+
+    def test_number_falls_back_to_synced_square_invoices(self, mocker):
+        mocker.patch("db.repository.find_invoice_log_by_number", return_value=None)
+        mocker.patch("db.repository.find_square_invoice_by_number",
+                     return_value={"square_invoice_id": self.SQ_ID})
+        mocker.patch("services.square_service.get_invoice", return_value=self._inv())
+        out = ica.get_invoice_link(invoice_number="202471")
+        assert self.DASH in out
+
+    def test_send_never_substitutes_for_an_explicit_number(self, mocker):
+        # Staff named #202471; if it matches nothing we must NOT stage the
+        # customer's most recent draft instead.
+        mocker.patch("db.repository.find_invoice_log_by_number", return_value=None)
+        mocker.patch("db.repository.find_square_invoice_by_number", return_value=None)
+        recent = mocker.patch("db.repository.get_recent_invoice_for_customer")
+        out = ica.stage_send_invoice(customer_name="Chang Lim", invoice_number="202471")
+        assert "couldn't match" in out.lower()
+        recent.assert_not_called()
+        assert not ica._PENDING
+
+    def test_link_falls_back_to_customer_with_a_note(self, mocker):
+        # Read-only path: an unmatched number degrades to the customer's most
+        # recent invoice, flagged so staff can tell.
+        mocker.patch("db.repository.find_invoice_log_by_number", return_value=None)
+        mocker.patch("db.repository.find_square_invoice_by_number", return_value=None)
+        mocker.patch("db.repository.get_recent_invoice_for_customer",
+                     return_value={"square_invoice_id": self.SQ_ID,
+                                   "square_invoice_number": "202471"})
+        mocker.patch("services.square_service.get_invoice", return_value=self._inv())
+        out = ica.get_invoice_link(customer_name="Chang Lim", invoice_number="999999")
+        assert self.DASH in out and "most recent" in out
+
+    def test_square_id_passes_through_without_lookup(self, mocker):
+        log_lookup = mocker.patch("db.repository.find_invoice_log_by_number")
+        mocker.patch("services.square_service.get_invoice", return_value=self._inv())
+        out = ica.get_invoice_link(invoice_number=self.SQ_ID)
+        assert self.DASH in out
+        log_lookup.assert_not_called()

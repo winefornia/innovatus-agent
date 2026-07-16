@@ -134,6 +134,27 @@ def find_invoice_log_by_number(square_invoice_number: str) -> Optional[dict]:
     return rows[0] if rows else None
 
 
+def find_square_invoice_by_number(invoice_number: str) -> Optional[dict]:
+    """Fetch the synced square_invoices row for a display invoice number.
+
+    Covers invoices the agent didn't create (drafted directly in the Square
+    Dashboard), which invoice_logs therefore doesn't know about."""
+    number = str(invoice_number or "").lstrip("#").strip()
+    if not number:
+        return None
+    client = _get_client()
+    result = (
+        client.table("square_invoices")
+        .select("square_invoice_id, invoice_number, status, total_money_cents")
+        .eq("invoice_number", number)
+        .order("invoice_created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    rows = result.data or []
+    return rows[0] if rows else None
+
+
 def list_unverified_invoices(limit: int = 25) -> list[dict]:
     """Invoice logs still awaiting Square-email confirmation (open cases)."""
     client = _get_client()
