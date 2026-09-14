@@ -188,10 +188,11 @@ console) · `GET /invoices/recent`, `/reservations/recent` ·
 - Default IDs (Supabase host, GCP project numbers, Chat space, webhook URLs,
   authorized emails) are hardcoded as fallbacks in `app/config.py` and
   overridden by env — change env, not the fallbacks.
-- `scripts/sync.py` (weekly Square→Supabase sync) has **no scheduler in this
-  repo or on Fly** — it runs from outside the deployed system. The invoice half
-  of it is broken as of July 2026 (`square_invoices` is empty while `sync_state`
-  reports success). See `docs/ownership-and-migration.md` §4.
+- `scripts/sync.py` runs weekly from `.github/workflows/square-sync.yml` inside
+  Fly using its existing app secrets. GitHub's inactivity policy still applies;
+  the independent scheduler, durable ingestion and action-ledger upgrade plan is
+  `docs/reliability-upgrade.md`. `scripts/database_security.py` audits live RLS;
+  the matching SQL migration must be applied separately from deploy.
 - Account ownership across Fly/Supabase/GitHub/GCP/Square, and the migration
   plan to winery control: `docs/ownership-and-migration.md`.
 

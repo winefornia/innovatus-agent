@@ -1,20 +1,25 @@
 name: Square Sync
 
-# Weekly Square → Supabase sync (customers, orders, invoices).
-# Replaces the cron that ran on a personal machine (and silently stopped —
-# see docs/ownership-and-migration.md §4). Failures here turn the workflow
-# red and email repo watchers; a missing secret is a hard error, not a skip,
-# because "quietly not syncing" is the exact failure mode this exists to end.
-
+# Interim scheduler. Production maintenance runs inside Fly so Square/Supabase
+# keys remain in the app's secret store. See docs/reliability-upgrade.md for the
+# independent scheduler and freshness-monitor cutover (GitHub can auto-disable).
 on:
   schedule:
-    - cron: "0 9 * * 0" # Sundays 09:00 UTC — same cadence the old cron used
+    - cron: "17 9 * * 0"
   workflow_dispatch:
     inputs:
+      operation:
+        description: "Maintenance operation (database repair is manual only)"
+        type: choice
+        options: [sync, audit-security, secure-database]
+        default: sync
       full:
-        description: "Full backfill (ignore sync_state; upserts are idempotent)"
+        description: "Full Square backfill using idempotent upserts"
         type: boolean
         default: false
+
+permissions:
+  contents: read
 
 concurrency:
   group: square-sync
@@ -22,37 +27,37 @@ concurrency:
 
 jobs:
   sync:
-    name: Sync Square to Supabase
+    name: Maintain Square sync and database security
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
-      SQUARE_PROD_ACCESS_TOKEN: ${{ secrets.SQUARE_PROD_ACCESS_TOKEN }}
-      SQUARE_PROD_LOCATION_ID: ${{ secrets.SQUARE_PROD_LOCATION_ID }}
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      OPERATION: ${{ inputs.operation || 'sync' }}
+      FULL: ${{ inputs.full || 'false' }}
     steps:
-      - name: Check secrets
+      - name: Check Fly credential
         run: |
-          missing=""
-          [ -z "$SQUARE_PROD_ACCESS_TOKEN" ] && missing="$missing SQUARE_PROD_ACCESS_TOKEN"
-          [ -z "$SQUARE_PROD_LOCATION_ID" ]  && missing="$missing SQUARE_PROD_LOCATION_ID"
-          [ -z "$SUPABASE_URL" ]             && missing="$missing SUPABASE_URL"
-          [ -z "$SUPABASE_SERVICE_KEY" ]     && missing="$missing SUPABASE_SERVICE_KEY"
-          if [ -n "$missing" ]; then
-            echo "::error::Missing repo Actions secrets:$missing — add them under Settings → Secrets and variables → Actions."
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "::error::Missing FLY_API_TOKEN. Configure app-scoped Fly access in Actions secrets."
             exit 1
           fi
-
       - uses: actions/checkout@v4
-
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-          cache: pip
-
-      - name: Install dependencies
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
+      - name: Run maintenance inside Fly
+        shell: bash
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Run sync
-        run: python scripts/sync.py ${{ inputs.full == true && '--full' || '' }}
+          args=("$OPERATION")
+          if [ "$FULL" = "true" ]; then args+=(--full); fi
+          python scripts/fly_maintenance.py "${args[@]}"
+      - name: Job summary
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          echo "### Winefornia maintenance: $JOB_STATUS" >> "$GITHUB_STEP_SUMMARY"
+          echo "Operation: $OPERATION. Service keys remain in Fly; see the operation log for verification." >> "$GITHUB_STEP_SUMMARY"
