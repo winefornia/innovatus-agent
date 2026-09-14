@@ -406,6 +406,14 @@ async def _handle_message(ev: dict, decided_by: str) -> dict:
     text = (msg.get("argumentText") or msg.get("text") or "").strip()
     if not text:
         return {"text": ""}
+    # Deterministic status fast-path: plain status questions ("status",
+    # "status of Mira") are answered straight from the goal model — instant,
+    # same shape every time, no LLM. Returns None for anything it can't answer
+    # confidently, which falls through to the assistant below.
+    from services.tastingroom_status import try_status_reply
+    quick = await asyncio.to_thread(try_status_reply, text)
+    if quick:
+        return _text_resp(quick)
     # Free-form chat → the read-only conversational assistant (answers with full
     # case context). Actions still happen via the approval cards.
     from vertex_agent.chat_agent import discuss

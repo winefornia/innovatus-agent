@@ -94,6 +94,7 @@ Both share one core design philosophy: **a deterministic brain owns every real-w
 | `tastingroom_service.py` | Core reservation logic: email classification, fact extraction, reservation state persistence, availability claims, slot matching, LLM draft refinement. |
 | `tastingroom_mailbox.py` | Gmail ingestion: candidate filtering (Squarespace forms, facility emails), dedup, thread continuity, label management, routes to `vertex_agent/intake.py`. |
 | `tastingroom_chat_service.py` | Natural-language command helpers for tasting-room staff workflows (list pending, show case, mark invoice/payment, escalate, revise draft). |
+| `tastingroom_status.py` | Deterministic status fast-path for staff chat: "status" / "status of <name>" answered instantly from the goal model with a fixed traffic-light template — no LLM; unmatched phrases fall through to the assistant. |
 | `vertex_agent/intake.py` | Current tasting-room coordinator entry point: stores raw events, extracts facts, updates reservation state, derives gaps, and creates approval-gated action requests. |
 | `vertex_agent/goal_model.py` | Derived goal-state model for reservation readiness and next-step selection. |
 
