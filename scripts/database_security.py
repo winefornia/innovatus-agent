@@ -17,7 +17,10 @@ MIGRATION = Path(__file__).resolve().parents[1] / "db/migrations/20260914_backen
 
 TABLE_AUDIT = """
 select c.relname as table_name, c.relrowsecurity as rls_enabled,
-       has_table_privilege('service_role', c.oid, 'SELECT,INSERT,UPDATE,DELETE') as service_access,
+       (has_table_privilege('service_role', c.oid, 'SELECT')
+        and has_table_privilege('service_role', c.oid, 'INSERT')
+        and has_table_privilege('service_role', c.oid, 'UPDATE')
+        and has_table_privilege('service_role', c.oid, 'DELETE')) as service_access,
        (select count(*) from pg_policy p where p.polrelid=c.oid) as policy_count,
        has_table_privilege('anon', c.oid, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
          or has_any_column_privilege('anon', c.oid, 'SELECT,INSERT,UPDATE,REFERENCES') as anon_grants,
@@ -70,6 +73,19 @@ def main():
     if str(cfg.get("port", "")) != "6543":
         raise RuntimeError("Use the configured Supabase transaction pooler on port 6543")
     cfg.setdefault("sslmode", "require")
+    # Exercise the application's real backend key without fetching any records.
+    from urllib.request import Request, urlopen
+    key = os.environ.get("SUPABASE_SERVICE_KEY", "")
+    if not key:
+        raise RuntimeError("SUPABASE_SERVICE_KEY is missing")
+    def check_backend_api():
+        request = Request(os.environ["SUPABASE_URL"].rstrip("/") +
+                          "/rest/v1/invoice_chat_turns?select=id&limit=0",
+                          headers={"apikey": key, "Authorization": f"Bearer {key}"})
+        with urlopen(request, timeout=15) as response:
+            if response.status != 200:
+                raise RuntimeError("Backend Data API probe failed")
+    check_backend_api()
     with psycopg.connect(**cfg, connect_timeout=10, prepare_threshold=None) as conn:
         conn.execute("set local statement_timeout = '30s'")
         conn.execute("set local lock_timeout = '5s'")
@@ -91,6 +107,8 @@ def main():
             if violations(before) or before["exposed_views_or_foreign_tables"]:
                 print("SECURITY AUDIT FAILED: public table exposure requires repair", flush=True)
                 return 1
+    check_backend_api()
+    print("Backend Data API probe passed (no rows fetched)")
     print("Security verification passed" + ("; transaction committed" if args.apply else ""))
     return 0
 

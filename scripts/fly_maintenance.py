@@ -58,4 +58,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        raise SystemExit("Maintenance failed; see the operation output above (command payload omitted)")

@@ -501,6 +501,7 @@ alter table products                    enable row level security;
 alter table square_orders               enable row level security;
 alter table square_invoices             enable row level security;
 alter table invoice_logs                enable row level security;
+alter table invoice_chat_turns          enable row level security;
 alter table sync_state                  enable row level security;
 alter table agent_cases                 enable row level security;
 alter table trace_events                enable row level security;
