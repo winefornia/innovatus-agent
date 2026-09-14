@@ -1,7 +1,8 @@
 """Weekly incremental sync: Square → Supabase.
 
 Pulls only records created/updated since the last successful sync.
-Sync state (cursor + timestamp) is stored in the `sync_state` table.
+Sync start watermarks and results are stored in `sync_state`. Incremental
+windows overlap by ten minutes so timestamps and concurrent updates are replayed.
 
 Usage:
     python scripts/sync.py                    # sync all entities
@@ -9,7 +10,7 @@ Usage:
     python scripts/sync.py --full             # ignore sync_state, pull ALL history
 
 Automation: .github/workflows/square-sync.yml runs this weekly (Sundays
-09:00 UTC). It previously ran from a personal machine — see
+09:17 UTC). It previously ran from a personal machine — see
 docs/ownership-and-migration.md §4.
 
 Failure contract: an entity that errors does NOT stamp sync_state (so the
@@ -21,6 +22,8 @@ read `.invoices` off what is now a pager object, got None, and declared
 victory).
 """
 import argparse
+import json
+import random
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -37,13 +40,14 @@ from app.config import (
 )
 from supabase import create_client
 
-FALLBACK_LOOKBACK_DAYS = 8  # if no sync state, pull last 8 days
+OVERLAP = timedelta(minutes=10)
+REQUEST_OPTIONS = {"timeout_in_seconds": 60, "max_retries": 3}
 
 
 def _square():
     from square import Square
     from square.environment import SquareEnvironment
-    return Square(token=SQUARE_PROD_ACCESS_TOKEN, environment=SquareEnvironment.PRODUCTION)
+    return Square(token=SQUARE_PROD_ACCESS_TOKEN, environment=SquareEnvironment.PRODUCTION, timeout=60)
 
 
 def _supabase():
@@ -63,25 +67,34 @@ def _iso(v):
 # Sync state helpers
 # ---------------------------------------------------------------------------
 
-def get_last_synced(sb, entity: str) -> str:
-    """Return ISO timestamp of last sync, or 8 days ago as fallback."""
+def _timestamp(value) -> datetime:
+    value = datetime.fromisoformat(_iso(value).replace("Z", "+00:00"))
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+
+def get_last_synced(sb, entity: str) -> str | None:
+    """Replay a small overlap; missing checkpoints require a full reconciliation."""
     result = sb.table("sync_state").select("last_synced").eq("entity", entity).execute()
     rows = result.data or []
     if rows and rows[0].get("last_synced"):
-        return rows[0]["last_synced"]
-    return (datetime.now(timezone.utc) - timedelta(days=FALLBACK_LOOKBACK_DAYS)).isoformat()
+        return (_timestamp(rows[0]["last_synced"]) - OVERLAP).isoformat()
+    return None
 
 
-def set_last_synced(sb, entity: str, ts: str):
+def set_last_synced(sb, entity: str, ts: str, *, fetched=0, written=0):
     sb.table("sync_state").upsert(
-        {"entity": entity, "last_synced": ts, "notes": f"synced at {datetime.now(timezone.utc).isoformat()}"},
-        on_conflict="entity",
+        {"entity": entity, "last_synced": ts, "notes": json.dumps({
+            "status": "success", "finished_at": datetime.now(timezone.utc).isoformat(),
+            "fetched": fetched, "written": written,
+        })}, on_conflict="entity",
     ).execute()
 
 
 def _table_count(sb, table: str) -> int:
     resp = sb.table(table).select("id", count="exact").limit(1).execute()
-    return resp.count or 0
+    if resp.count is None:
+        raise RuntimeError(f"[{table}] database did not return an exact count")
+    return resp.count
 
 
 def _since_or_none(sb, entity: str, table: str, full: bool) -> str | None:
@@ -106,22 +119,22 @@ def _since_or_none(sb, entity: str, table: str, full: bool) -> str | None:
 # ---------------------------------------------------------------------------
 
 def sync_customers(sb, sq, full: bool = False):
+    started_at = datetime.now(timezone.utc).isoformat()
     since = _since_or_none(sb, "customers", "customers", full)
     print(f"\n[customers] Syncing since {since or 'the beginning'}...")
 
-    # Get existing tier assignments from DB (preserve them)
-    existing = sb.table("customers").select("square_customer_id, tier_name").execute()
-    tier_map = {r["square_customer_id"]: r["tier_name"] for r in (existing.data or [])}
-
+    # Staff own tier_name. Never send it in an upsert: reading then writing
+    # tiers can both truncate at PostgREST's page limit and overwrite an edit
+    # that happened while this sync was running.
     fetched = 0
     rows = []
 
-    for c in sq.customers.list():
+    for c in sq.customers.list(request_options=REQUEST_OPTIONS):
         fetched += 1
         created = _iso(getattr(c, "created_at", None))
         updated = _iso(getattr(c, "updated_at", None))
         check = updated or created or ""
-        if since and check and check < since:
+        if since and check and _timestamp(check) < _timestamp(since):
             continue
 
         email = getattr(c, "email_address", None) or ""
@@ -136,12 +149,11 @@ def sync_customers(sb, sq, full: bool = False):
             "company": getattr(c, "company_name", None),
             "email": email or None,
             "phone": getattr(c, "phone_number", None),
-            "tier_name": tier_map.get(c.id),
             "square_created_at": created,
             "synced_at": datetime.now(timezone.utc).isoformat(),
         })
 
-    _finish_entity(sb, "customers", "customers", fetched, rows, "square_customer_id", since)
+    _finish_entity(sb, "customers", "customers", fetched, rows, "square_customer_id", since, started_at)
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +161,7 @@ def sync_customers(sb, sq, full: bool = False):
 # ---------------------------------------------------------------------------
 
 def sync_orders(sb, sq, full: bool = False):
+    started_at = datetime.now(timezone.utc).isoformat()
     since = _since_or_none(sb, "orders", "square_orders", full)
     print(f"\n[orders] Syncing since {since or 'the beginning'}...")
     cust_map = _build_customer_map(sb)
@@ -156,6 +169,7 @@ def sync_orders(sb, sq, full: bool = False):
     fetched = 0
     rows = []
     cursor = None
+    seen_cursors = set()
 
     while True:
         query = {"sort": {"sort_field": "UPDATED_AT", "sort_order": "ASC"}}
@@ -169,10 +183,10 @@ def sync_orders(sb, sq, full: bool = False):
         if cursor:
             body["cursor"] = cursor
 
-        resp = sq.orders.search(**body)
+        resp = sq.orders.search(**body, request_options=REQUEST_OPTIONS)
+        if getattr(resp, "errors", None):
+            raise RuntimeError("[orders] Square returned an error response; checkpoint unchanged")
         orders = getattr(resp, "orders", None) or []
-        if not orders:
-            break
 
         for o in orders:
             fetched += 1
@@ -203,9 +217,12 @@ def sync_orders(sb, sq, full: bool = False):
         cursor = getattr(resp, "cursor", None)
         if not cursor:
             break
+        if cursor in seen_cursors:
+            raise RuntimeError("[orders] Square repeated a pagination cursor")
+        seen_cursors.add(cursor)
         time.sleep(0.3)
 
-    _finish_entity(sb, "orders", "square_orders", fetched, rows, "square_order_id", since)
+    _finish_entity(sb, "orders", "square_orders", fetched, rows, "square_order_id", since, started_at)
 
 
 # ---------------------------------------------------------------------------
@@ -213,6 +230,7 @@ def sync_orders(sb, sq, full: bool = False):
 # ---------------------------------------------------------------------------
 
 def sync_invoices(sb, sq, full: bool = False):
+    started_at = datetime.now(timezone.utc).isoformat()
     since = _since_or_none(sb, "invoices", "square_invoices", full)
     print(f"\n[invoices] Syncing since {since or 'the beginning'}...")
     cust_map = _build_customer_map(sb)
@@ -223,10 +241,10 @@ def sync_invoices(sb, sq, full: bool = False):
     # invoices.list returns a pager — iterate it directly, exactly like
     # customers.list above. (The old code read a nonexistent `.invoices`
     # attribute off this pager, got None, and silently synced nothing.)
-    for inv in sq.invoices.list(location_id=SQUARE_PROD_LOCATION_ID, limit=200):
+    for inv in sq.invoices.list(location_id=SQUARE_PROD_LOCATION_ID, limit=200, request_options=REQUEST_OPTIONS):
         fetched += 1
         updated = _iso(getattr(inv, "updated_at", None))
-        if since and updated and updated < since:
+        if since and updated and _timestamp(updated) < _timestamp(since):
             continue
 
         cid = None
@@ -235,13 +253,15 @@ def sync_invoices(sb, sq, full: bool = False):
 
         payment_req = (inv.payment_requests or [None])[0]
         due_date = _iso(getattr(payment_req, "due_date", None)) if payment_req else None
-        total_cents = None
-        if payment_req:
-            for attr in ["total_completed_amount_money", "computed_amount_money"]:
-                m = getattr(payment_req, attr, None)
-                if m:
-                    total_cents = m.amount
-                    break
+        # Invoice total is the computed amount due, not the amount paid so
+        # far (often zero for an unpaid invoice). Include every installment.
+        amounts = []
+        for req in inv.payment_requests or []:
+            money = (getattr(req, "computed_amount_money", None)
+                     or getattr(req, "total_completed_amount_money", None))
+            if money is not None and money.amount is not None:
+                amounts.append(money.amount)
+        total_cents = sum(amounts) if amounts else None
 
         rows.append({
             "square_invoice_id": inv.id,
@@ -259,7 +279,7 @@ def sync_invoices(sb, sq, full: bool = False):
             "synced_at": datetime.now(timezone.utc).isoformat(),
         })
 
-    _finish_entity(sb, "invoices", "square_invoices", fetched, rows, "square_invoice_id", since)
+    _finish_entity(sb, "invoices", "square_invoices", fetched, rows, "square_invoice_id", since, started_at)
 
 
 # ---------------------------------------------------------------------------
@@ -267,18 +287,50 @@ def sync_invoices(sb, sq, full: bool = False):
 # ---------------------------------------------------------------------------
 
 def _build_customer_map(sb) -> dict:
-    result = sb.table("customers").select("id, square_customer_id").execute()
-    return {r["square_customer_id"]: r["id"] for r in (result.data or []) if r["square_customer_id"]}
+    # Supabase caps a response at 1,000 rows. Fetch all pages with stable order.
+    mapping = {}
+    offset = 0
+    while True:
+        result = (sb.table("customers").select("id, square_customer_id")
+                  .order("id").range(offset, offset + 999).execute())
+        rows = result.data or []
+        mapping.update({r["square_customer_id"]: r["id"] for r in rows if r["square_customer_id"]})
+        if len(rows) < 1000:
+            return mapping
+        offset += len(rows)
+
+
+def _retryable(exc):
+    import httpx
+    if isinstance(exc, httpx.TransportError):
+        return True
+    status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    return str(status) in {"408", "429", "500", "502", "503", "504"}
 
 
 def _batch_upsert(sb, table: str, rows: list, conflict_col: str, batch_size=500):
     for i in range(0, len(rows), batch_size):
         batch = rows[i:i + batch_size]
-        sb.table(table).upsert(batch, on_conflict=conflict_col).execute()
+        for attempt in range(4):
+            try:
+                # Only provider-owned columns are written. Missing local fields
+                # must not be replaced with null on existing customers.
+                response = sb.table(table).upsert(
+                    batch, on_conflict=conflict_col, default_to_null=False,
+                ).execute()
+                break
+            except Exception as exc:
+                if attempt == 3 or not _retryable(exc):
+                    raise
+                time.sleep(min(2 ** attempt + random.random(), 10))
+        returned = {r[conflict_col] for r in response.data or []}
+        expected = {r[conflict_col] for r in batch}
+        if not expected <= returned:
+            raise RuntimeError(f"[{table}] incomplete upsert acknowledgement; checkpoint unchanged")
 
 
 def _finish_entity(sb, entity: str, table: str, fetched: int, rows: list,
-                   conflict_col: str, since: str | None):
+                   conflict_col: str, since: str | None, started_at: str):
     """Write, verify, and only then stamp sync_state.
 
     The verification is the anti-silent-failure guard: if we fetched data from
@@ -299,7 +351,9 @@ def _finish_entity(sb, entity: str, table: str, fetched: int, rows: list,
         print(f"    WARNING: full pull fetched 0 {entity} from Square — "
               f"verify the location/token if this is unexpected.")
 
-    set_last_synced(sb, entity, datetime.now(timezone.utc).isoformat())
+    # Store the START boundary, not completion time: updates occurring after
+    # an early page was fetched must be eligible for the next run.
+    set_last_synced(sb, entity, started_at, fetched=fetched, written=len(rows))
     print(f"    fetched {fetched} from Square, wrote {len(rows)} to {table}.")
 
 
@@ -317,6 +371,8 @@ def main():
 
     if not SQUARE_PROD_ACCESS_TOKEN:
         sys.exit("ERROR: SQUARE_PROD_ACCESS_TOKEN not set in .env")
+    if not SQUARE_PROD_LOCATION_ID:
+        sys.exit("ERROR: SQUARE_PROD_LOCATION_ID is not configured")
     if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
         sys.exit("ERROR: SUPABASE_URL / SUPABASE_SERVICE_KEY not set in .env")
 
@@ -335,7 +391,16 @@ def main():
         try:
             fn(sb, sq, full=args.full)
         except Exception as exc:  # noqa: BLE001 — one entity failing must not hide the others
-            print(f"    ERROR [{name}]: {exc} — sync_state NOT stamped; next run retries.")
+            # Public Actions logs must never contain provider payloads or keys.
+            print(f"    ERROR [{name}]: {type(exc).__name__} — checkpoint NOT advanced; next run retries.")
+            try:
+                sb.table("sync_state").upsert({
+                    "entity": name, "notes": json.dumps({"status": "failed",
+                    "failed_at": datetime.now(timezone.utc).isoformat(),
+                    "error_type": type(exc).__name__}),
+                }, on_conflict="entity", default_to_null=False).execute()
+            except Exception:
+                print(f"    ERROR [{name}]: could not persist failure status")
             failures.append(name)
 
     elapsed = (datetime.now() - start).seconds

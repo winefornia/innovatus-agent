@@ -71,35 +71,37 @@ def _get_client():
         return None
 
 
-def get_or_create_square_customer(email: str, full_name: str, idempotency_key: str = "") -> dict:
-    """Look up a customer in Square by email, or create them if not found.
-
-    Returns dict with customer_id and status ('found' or 'created'), or error key.
-    """
+def lookup_square_customer(email: str) -> dict:
+    """Read-only lookup. A missing customer is data, never permission to create."""
     client = _get_client()
     if not client:
         return {"error": "Square not configured. Set SQUARE_PROD_ACCESS_TOKEN in .env"}
     try:
         response = client.customers.search(
-            query={
-                "filter": {
-                    "email_address": {
-                        "exact": email,
-                    }
-                }
-            }
+            query={"filter": {"email_address": {"exact": email}}}
         )
+        if getattr(response, "errors", None):
+            return {"error": "Square customer lookup failed"}
         customers = response.customers or []
         if customers:
             return {"status": "found", "customer_id": customers[0].id, "email": email}
+        return {"status": "not_found", "email": email}
+    except Exception as e:
+        return {"error": str(e)}
 
+
+def get_or_create_square_customer(email: str, full_name: str, idempotency_key: str = "") -> dict:
+    """Look up or create a customer; only call after approval of this write."""
+    result = lookup_square_customer(email)
+    if result.get("status") != "not_found":
+        return result
+    client = _get_client()
+    try:
         parts = full_name.strip().split(" ", 1)
-        given = parts[0]
-        family = parts[1] if len(parts) > 1 else ""
         create_resp = client.customers.create(
             idempotency_key=idempotency_key or str(uuid.uuid4()),
-            given_name=given,
-            family_name=family,
+            given_name=parts[0],
+            family_name=parts[1] if len(parts) > 1 else "",
             email_address=email,
         )
         return {"status": "created", "customer_id": create_resp.customer.id, "email": email}

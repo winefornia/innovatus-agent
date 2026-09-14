@@ -100,7 +100,8 @@ class ToolRegistry:
             # Surface errors returned as dict keys (existing service pattern)
             if "error" in result:
                 raise ToolError(name, result["error"])
-        except ToolError:
+        except ToolError as exc:
+            error_str = str(exc.reason)
             raise
         except Exception as e:
             error_str = str(e)
@@ -151,9 +152,8 @@ def _register_all():
 
     def _square_lookup_customer(email: str, full_name: str = "") -> dict:
         """Read-only: look up a Square customer by email. Never creates."""
-        from services.square_service import get_or_create_square_customer
-        # We use get_or_create but treat status="found" only as success
-        result = get_or_create_square_customer(email=email, full_name=full_name or email)
+        from services.square_service import lookup_square_customer
+        result = lookup_square_customer(email=email)
         if "error" in result:
             raise ToolError("square_lookup_customer", result["error"])
         return result
