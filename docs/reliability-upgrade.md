@@ -68,6 +68,15 @@ The weekly GitHub schedule is an interim recovery mechanism. Changing its cron
 also reactivates schedule activity, but does **not** remove GitHub's inactivity
 policy. Do not claim the long-term scheduler migration is complete.
 
+## Verified recovery results
+
+The full production reconciliation on 2026-09-14 wrote 1,023 customers, 1,213
+orders, and 463 invoices in 35 seconds. All three entities completed successfully.
+[Full reconciliation run](https://github.com/winefornia/innovatus-agent/actions/runs/34817948207).
+The live app returned HTTP 200 with watcher status `ok` after the security repair.
+The repair-branch suite passed 438 tests with 3 skipped. These observations verify
+the immediate repair; they do not demonstrate long-term scheduling or replay SLOs.
+
 ## Target design
 
 Use one durable execution layer for business work, retaining the deterministic
